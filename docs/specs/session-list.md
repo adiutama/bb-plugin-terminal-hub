@@ -2,10 +2,10 @@
 
 - Status: draft
 - Prefix: LIST
-- Decisions: 202610100901, 202610100902, 202610100904, 202610100911
+- Decisions: 202610100901, 202610100902, 202610100904, 202610100911, 202610101721
 
-The left column of the Terminals page: every terminal in one environment,
-grouped by who owns it, so the user can find what is running and spot what was
+The left column of the Terminals page: every terminal in one environment, or
+in every environment of the project, grouped by who owns it, so the user can find what is running and spot what was
 left behind.
 
 ## Behaviour
@@ -46,5 +46,7 @@ the environment, archived ones included
 - **LIST-9** "New terminal" creates an interactive shell at environment scope in the selected environment and selects it. (ADR 202610100901)
 - **LIST-10** An environment with no terminals shows an empty state with the "New terminal" button.
 - **LIST-12** Under "Environment", terminals are in creation order, oldest first. Under "From threads", terminals are grouped by thread, threads ordered by most recent activity, and each thread's terminals in creation order.
-- **LIST-13** The list covers one environment at a time; there is no "All environments" view.
+- **LIST-13** With "All environments" selected, the list shows every environment in the project as a collapsible section headed by its name and running count, each containing that environment's "Environment" and "From threads" groups. Sections with no terminals are collapsed. (ADR 202610101721)
+- **LIST-14** With "All environments" selected, environment-scoped terminals refresh every 5 seconds; all threads' terminals are rescanned when the view opens and every 30 seconds; and a thread's terminals are refreshed at once when BB signals that they changed. (ADR 202610101721)
+- **LIST-15** Clicking an environment's section header selects that environment. (ADR 202610101721)
 
