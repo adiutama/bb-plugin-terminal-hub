@@ -5,8 +5,60 @@ see and control every terminal running in a checkout or worktree, whichever
 thread or agent started it. It sits alongside BB's per-thread terminals and
 does not replace them.
 
-> Status: in design. Nothing is installable yet. See
-> [docs/overview.md](docs/overview.md) for what it will do.
+Requires bb 0.46 or later.
+
+## Install
+
+From a clone of this repository:
+
+```sh
+npm install
+bb plugin install .
+```
+
+bb builds the page on install. A **Terminals** entry appears in the rail.
+
+## Use
+
+Open **Terminals** from the rail. Pick a project, then an environment (a
+checkout or worktree), or keep **All environments** to see every environment
+in the project at once. The title bar shows how many terminals are running.
+
+- **Environment** lists the environment's own terminals: the ones you start
+  here with **New terminal**, and the ones agents start for long-running
+  processes. They are shared by every thread and outlive any one of them.
+- **From threads** lists terminals started from a thread's sidebar or by an
+  agent, with the thread's title and state. A terminal still running after its
+  thread went idle, errored, or was archived is highlighted, with how long ago
+  that happened.
+- Each row shows whether the terminal is running (or its exit code), its title,
+  its starting directory, and a local server address such as `:3000` when one
+  appears in its output.
+- Select a row to see the terminal live, rendered with Ghostty's engine. Click
+  into it to type; only the view you are typing in resizes the shell, so the
+  same terminal open in a thread's sidebar keeps its size until then.
+  **Cmd/Ctrl+F** searches its scrollback.
+- Each row's **⋯** menu can **Rename**, **Restart shell**, or **Close** it.
+  Closing a thread's terminal asks first. **Close all from settled threads**
+  cleans up every terminal left behind by threads that are no longer active.
+- The URL names the project, environment, and terminal, so reloads, links, and
+  back/forward return to the same shell.
+
+Terminal Hub sits alongside bb's own terminals and leaves the thread sidebar
+alone.
+
+### For agents
+
+The plugin ships a skill that tells agents to start dev servers and watchers
+as environment terminals (`bb terminal create --environment … --title …`),
+to check what is already running first, and to leave them running when done.
+Agents and you can list an environment's terminals from the command line:
+
+```sh
+bb terminal-hub list                      # the calling thread's environment
+bb terminal-hub list --environment env_…  # any environment
+bb terminal-hub list --json               # id, title, status, scope, thread, serverHint
+```
 
 ## Contributing
 
@@ -23,9 +75,11 @@ npm test              # Vitest
 npm run check:specs   # decisions, specs, and tests are in sync
 ```
 
-When the first plugin entry point lands, run `bb plugin types` to pin
-`@get-bb/plugin-sdk` and its shimmed type packages to the installed BB, and add
-`build` (`bb plugin build`) and `test:live` scripts.
+```sh
+npm run build         # bb plugin build: dist/ bundles, as an install builds them
+npm run test:live     # smoke test against the running bb (plugin installed)
+bb plugin types       # repin @get-bb/plugin-sdk and shimmed types to the installed bb
+```
 
 ### Docs
 
