@@ -1,0 +1,26 @@
+{
+  "name": "bb-plugin-terminal-hub",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Terminal Hub for BB: see and control every terminal running in a checkout or worktree.",
+  "license": "MIT",
+  "engines": {
+    "bb": ">=0.46",
+    "bbPluginSdk": ">=0.6.37"
+  },
+  "scripts": {
+    "check": "npm run lint && npm run typecheck && npm run test && npm run check:specs",
+    "lint": "biome check .",
+    "format": "biome check --write .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "check:specs": "node scripts/check-specs.mjs"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.15",
+    "@types/node": "24.19.2",
+    "typescript": "7.0.2",
+    "vitest": "5.0.3"
+  }
+}
