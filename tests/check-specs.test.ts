@@ -374,8 +374,11 @@ describe("check-specs", () => {
   });
 
   describe("traceability", () => {
-    it("requires a passing test for every agreed rule", () => {
-      const root = repo(validFiles());
+    it("requires a passing test for every implemented rule", () => {
+      const root = repo({
+        ...validFiles(),
+        "docs/specs/sample.md": spec({ status: "implemented" }),
+      });
       expect(checkRepo(root, [])).toContainEqual(
         expect.stringContaining("FIX-1 has no passing test"),
       );
@@ -384,9 +387,11 @@ describe("check-specs", () => {
       );
     });
 
-    it("exempts draft specs from test coverage", () => {
-      const root = repo({ ...validFiles(), "docs/specs/sample.md": spec({ status: "draft" }) });
-      expect(checkRepo(root, [])).toEqual([]);
+    it("exempts draft and agreed specs from test coverage", () => {
+      for (const status of ["draft", "agreed"]) {
+        const root = repo({ ...validFiles(), "docs/specs/sample.md": spec({ status }) });
+        expect(checkRepo(root, []), status).toEqual([]);
+      }
     });
 
     it("rejects tests that name unknown rules, including misspelled prefixes", () => {
@@ -397,7 +402,10 @@ describe("check-specs", () => {
     });
 
     it("ignores titles that do not start with rule IDs", () => {
-      const root = repo(validFiles());
+      const root = repo({
+        ...validFiles(),
+        "docs/specs/sample.md": spec({ status: "implemented" }),
+      });
       expect(checkRepo(root, [passed("covers FIX-1 eventually")])).toContainEqual(
         expect.stringContaining("FIX-1 has no passing test"),
       );

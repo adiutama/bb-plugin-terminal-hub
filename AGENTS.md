@@ -27,8 +27,9 @@ Code is what the docs compile into. Work always flows in this order:
   change neither) does not.
 - Approval is explicit: a contributor says so in the thread or the PR. Agents
   never set a spec to `agreed` or an ADR to `accepted` on their own.
-- If code and an `agreed` spec disagree, the spec wins: fix the code and say
-  so. If the spec itself looks wrong, ask; never edit a spec to match the code.
+- If code and an `agreed` or `implemented` spec disagree, the spec wins: fix
+  the code and say so. If the spec itself looks wrong, ask; never edit a spec to
+  match the code.
 
 ## Decisions are migrations
 
@@ -37,7 +38,8 @@ and that the code must apply.
 
 - Named `YYYYMMDDHHMM-slug.md` in UTC. Refer to them by the timestamp.
 - Lifecycle: `proposed` → `accepted` → `superseded`. Accepted means decided, not
-  built; specs track what is built.
+  built; specs track what is built (`agreed` = approved to build,
+  `implemented` = built and tested).
 - Once accepted, an ADR is frozen. Only its `Status` and `Superseded by` lines
   may change. It is never edited, renamed, or deleted.
 - To change a decision, write a new ADR that lists the old one in `Supersedes`.
@@ -49,7 +51,7 @@ and that the code must apply.
 
 ## Definition of done
 
-- The spec describes what the code does, and every rule in an `agreed` or
-  `implemented` spec has a test.
+- The spec describes what the code does. A spec is marked `implemented` once
+  every rule has a passing test, and from then on the check enforces it.
 - `npm run check` passes.
 - README is updated if a user would notice the change.

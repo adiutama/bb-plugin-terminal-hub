@@ -49,8 +49,8 @@ Each folder has a `_template.md`. Specs move `draft` → `agreed` →
   are deleted or renamed. This needs full git history.
 - Spec headers and rule lines are well formed; cited ADRs are in `Decisions` and
   accepted.
-- Every rule in an `agreed` or `implemented` spec has a passing test, and every
-  test ID names a real rule.
+- Every rule in an `implemented` spec has a passing test, and every test ID names
+  a real rule. `agreed` specs are approved but not yet required to be covered.
 
 ### Tests
 

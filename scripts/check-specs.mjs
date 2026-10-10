@@ -410,7 +410,7 @@ function checkTraceability(specs, tests, errors) {
   }
 
   for (const spec of specs) {
-    if (spec.status === "draft") continue;
+    if (spec.status !== "implemented") continue;
     for (const rule of spec.rules) {
       if (!tested.has(rule.id)) {
         errors.push(
