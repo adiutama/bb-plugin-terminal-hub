@@ -1,6 +1,6 @@
 # Agent surface
 
-- Status: draft
+- Status: agreed
 - Prefix: AGENT
 - Decisions: 202610100907, 202610100908
 

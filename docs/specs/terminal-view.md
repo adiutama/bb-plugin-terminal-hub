@@ -1,6 +1,6 @@
 # Terminal view
 
-- Status: draft
+- Status: agreed
 - Prefix: VIEW
 - Decisions: 202610100910, 202610100911, 202610100912
 

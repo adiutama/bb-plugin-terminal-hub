@@ -1,6 +1,6 @@
 # Offer a project-wide view of all environments, and open it by default
 
-- Status: proposed
+- Status: accepted
 - Date: 2026-10-10
 - Supersedes: none
 - Superseded by: none

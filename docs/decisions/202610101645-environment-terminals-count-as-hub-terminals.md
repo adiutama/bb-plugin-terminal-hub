@@ -1,6 +1,6 @@
 # Environment-scoped terminals count as hub terminals
 
-- Status: proposed
+- Status: accepted
 - Date: 2026-10-10
 - Supersedes: none
 - Superseded by: none

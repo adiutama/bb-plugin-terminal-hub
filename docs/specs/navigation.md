@@ -1,6 +1,6 @@
 # Navigation
 
-- Status: draft
+- Status: agreed
 - Prefix: NAV
 - Decisions: 202610101629, 202610101721
 
