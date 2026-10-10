@@ -49,7 +49,7 @@
   pointer-events: none;
 }
 
-.th-select-all .term-row {
+.th-terminal .wterm.th-select-all .term-row {
   background: color-mix(in srgb, var(--foreground) 22%, transparent) !important;
 }
 
