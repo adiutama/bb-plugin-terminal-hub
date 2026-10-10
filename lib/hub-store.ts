@@ -502,6 +502,11 @@ export class HubStore {
 
   // ── actions ─────────────────────────────────────────────────────────────
 
+  /** True for a terminal closed or dismissed from this page. */
+  removedHere(terminalId: string): boolean {
+    return this.gone.has(terminalId);
+  }
+
   /** LIST-11: the user dismissed an exited row. */
   dismiss(terminalId: string): void {
     this.gone.add(terminalId);

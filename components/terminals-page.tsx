@@ -107,6 +107,8 @@ export function TerminalsPage({ subPath }: PluginNavPanelProps) {
   // biome-ignore lint/correctness/useExhaustiveDependencies: lookupNonce re-runs a retry.
   useEffect(() => {
     if (!selectedId || selectedRow || !listed || lookups.has(selectedId)) return;
+    // Closed or dismissed here: the action moves the selection itself (ACT-7).
+    if (store.removedHere(selectedId)) return;
     let cancelled = false;
     sdk.terminals.get({ terminalId: selectedId }).then(
       (session) => {
@@ -131,7 +133,7 @@ export function TerminalsPage({ subPath }: PluginNavPanelProps) {
     return () => {
       cancelled = true;
     };
-  }, [selectedId, selectedRow, listed, lookups, sdk, lookupNonce]);
+  }, [selectedId, selectedRow, listed, lookups, sdk, store, lookupNonce]);
 
   useEffect(() => {
     if (missing?.kind === "unreachable" && missing.terminalId !== selectedId) setMissing(null);
