@@ -94,6 +94,17 @@ export function notFound(): Error {
 export function fakeSdk(w: World) {
   const listeners = new Set<(event: any) => void>();
   let created = 0;
+  // Output per terminal, numbered like bb's ring buffer. `w.output` seeds it.
+  const streams = new Map<string, { seq: number; text: string }[]>();
+  const streamOf = (terminalId: string) => {
+    let chunks = streams.get(terminalId);
+    if (!chunks) {
+      const seed = w.output[terminalId];
+      chunks = seed ? [{ seq: 1, text: seed }] : [];
+      streams.set(terminalId, chunks);
+    }
+    return chunks;
+  };
   const find = (terminalId: string) => {
     const found = w.terminals.find((t) => t.id === terminalId);
     if (!found) throw notFound();
@@ -113,18 +124,34 @@ export function fakeSdk(w: World) {
           .map((t) => ({ ...t })),
       })),
       get: vi.fn(async ({ terminalId }: { terminalId: string }) => ({ ...find(terminalId) })),
-      output: vi.fn(async ({ terminalId }: { terminalId: string; tailBytes?: number }) => {
-        const session = find(terminalId);
-        const text = w.output[terminalId] ?? "";
-        return {
-          chunks: text ? [{ seq: 1, dataBase64: Buffer.from(text).toString("base64") }] : [],
-          nextSeq: 1,
-          truncated: false,
-          status: session.status,
-          exitCode: session.exitCode,
-          closeReason: null,
-        };
-      }),
+      output: vi.fn(
+        async ({
+          terminalId,
+          sinceSeq,
+          tailBytes,
+        }: {
+          terminalId: string;
+          sinceSeq?: number;
+          tailBytes?: number;
+        }) => {
+          const session = find(terminalId);
+          const chunks = streamOf(terminalId);
+          const from = tailBytes !== undefined ? 0 : (sinceSeq ?? 0);
+          return {
+            chunks: chunks
+              .filter((chunk) => chunk.seq > from)
+              .map((chunk) => ({
+                seq: chunk.seq,
+                dataBase64: Buffer.from(chunk.text).toString("base64"),
+              })),
+            nextSeq: chunks.at(-1)?.seq ?? 0,
+            truncated: false,
+            status: session.status,
+            exitCode: session.exitCode,
+            closeReason: null,
+          };
+        },
+      ),
       create: vi.fn(
         async (args: {
           cols: number;
@@ -219,6 +246,11 @@ export function fakeSdk(w: World) {
   };
   return {
     sdk,
+    /** The shell writes `text`. */
+    write(terminalId: string, text: string) {
+      const chunks = streamOf(terminalId);
+      chunks.push({ seq: (chunks.at(-1)?.seq ?? 0) + 1, text });
+    },
     /** Fires bb's `thread:changed` realtime event. */
     emitThreadChanged(event: { id: string; changes: string[]; metadata?: { projectId?: string } }) {
       for (const listener of listeners) listener({ entity: "thread", ...event });
