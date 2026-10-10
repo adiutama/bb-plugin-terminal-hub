@@ -5,7 +5,8 @@ export default defineConfig({
   resolve: { alias: { "@": fileURLToPath(new URL(".", import.meta.url)) } },
   test: {
     include: ["tests/**/*.test.ts", "tests/**/*.test.tsx"],
-    exclude: ["tests/fixtures/**", "node_modules/**"],
+    exclude: ["tests/fixtures/**", "tests/setup/**", "node_modules/**"],
+    setupFiles: ["tests/setup/jest-dom.ts"],
     // check:specs reads this report to see which rules have passing tests.
     reporters: ["default", "json"],
     outputFile: { json: ".cache/test-results.json" },
