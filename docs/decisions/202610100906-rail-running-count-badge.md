@@ -1,9 +1,9 @@
 # Show a running-count badge on the rail entry
 
-- Status: accepted
+- Status: superseded
 - Date: 2026-10-10
 - Supersedes: none
-- Superseded by: none
+- Superseded by: 202610101629
 - Applies to: docs/specs/navigation.md (planned)
 
 ## Context
