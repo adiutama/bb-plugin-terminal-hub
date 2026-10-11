@@ -1,9 +1,9 @@
 # Filter the list and move through it with the keyboard
 
-- Status: accepted
+- Status: superseded
 - Date: 2026-10-11
 - Supersedes: none
-- Superseded by: none
+- Superseded by: 202610110324
 - Applies to: docs/specs/session-list.md, docs/specs/navigation.md, docs/specs/actions.md, components/session-list.tsx, components/session-row.tsx, components/list-header.tsx, components/terminals-page.tsx, lib/all-view.ts, lib/keyboard.ts
 
 ## Context
