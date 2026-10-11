@@ -22,7 +22,7 @@ part of the URL after the page path (`subPath`) carries the selection.
 - **NAV-1** The plugin registers one `navPanel` titled "Terminals" at path `terminals`, so the page lives at `/plugins/terminal-hub/terminals`.
 - **NAV-2** The URL carries the selected project, environment, and terminal; reloading the page restores all three.
 - **NAV-3** Selecting a terminal adds a history entry, so back and forward move between previously selected shells.
-- **NAV-4** Opening the page without a project in the URL selects the current project from `useBbContext`, or else the first project in BB's project list, then restores that project's remembered place (NAV-10). (ADR 202610111227)
+- **NAV-4** Opening the page without a project in the URL selects the project the page last showed since bb loaded, if BB still lists it; otherwise the current project from `useBbContext`, or else the first project in BB's project list. It then restores that project's remembered place (NAV-10). (ADR 202610111227)
 - **NAV-7** Without an environment in the URL, and none restored under NAV-10, "All environments" is selected; the URL uses `all` in place of an environment id. (ADR 202610111227)
 - **NAV-8** Changing the project or environment replaces the current history entry; only selecting a terminal adds one.
 - **NAV-5** A link to a terminal that no longer exists opens its environment's list with a notice that the terminal is gone. So does returning to the page when the selected terminal went away meanwhile (LIST-28). (ADR 202610111227)
