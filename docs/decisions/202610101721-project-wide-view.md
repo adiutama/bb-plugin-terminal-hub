@@ -1,9 +1,9 @@
 # Offer a project-wide view of all environments, and open it by default
 
-- Status: accepted
+- Status: superseded
 - Date: 2026-10-10
 - Supersedes: none
-- Superseded by: none
+- Superseded by: 202610110125
 - Applies to: docs/specs/session-list.md, docs/specs/navigation.md, docs/specs/actions.md
 
 ## Context
