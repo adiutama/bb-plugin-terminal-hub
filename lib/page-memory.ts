@@ -18,6 +18,8 @@ export interface ProjectMemory {
 
 export class PageMemory {
   private projects = new Map<string, ProjectMemory>();
+  /** NAV-4: the project the page last showed. */
+  lastProjectId: string | null = null;
   /** LIST-21: one filter, for the project it was typed in. */
   filter: { projectId: string; text: string } | null = null;
 

@@ -203,8 +203,13 @@ export function TerminalsPage({ subPath }: PluginNavPanelProps) {
   );
 
   // NAV-4, NAV-7, NAV-10: fill in a missing project or environment, replacing
-  // the entry. Only the root route restores the project's remembered place.
-  const fallbackProject = context.projectId ?? projects?.[0]?.id ?? null;
+  // the entry. Only the root route restores the project's remembered place:
+  // the project the page last showed first, as the rail opens it at its root.
+  const last = memory.lastProjectId;
+  const lastListed =
+    last !== null && (projects === null || projects.some((project) => project.id === last));
+  const fallbackProject =
+    (lastListed ? last : null) ?? context.projectId ?? projects?.[0]?.id ?? null;
   useEffect(() => {
     if (route.projectId === null) {
       if (fallbackProject === null) return;
@@ -225,6 +230,7 @@ export function TerminalsPage({ subPath }: PluginNavPanelProps) {
   // NAV-10: remember where the user is in each project.
   useEffect(() => {
     if (route.projectId === null) return;
+    memory.lastProjectId = route.projectId;
     memory.project(route.projectId).route = {
       environment: route.environment,
       terminalId: route.terminalId,

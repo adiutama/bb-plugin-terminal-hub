@@ -1303,7 +1303,23 @@ describe("returning to the page", () => {
     expect(page.subPath()).toBe("proj_1/all");
   });
 
-  it("NAV-10: one project's remembered place is never used for another", async () => {
+  it("NAV-4, NAV-10: back from a page with no current project (home, settings), lands on the project the page last showed", async () => {
+    const w = world({
+      projects: [
+        { id: "proj_1", name: "Project one" },
+        { id: "proj_2", name: "Project two" },
+      ],
+    });
+    const page = await mountPage(w, "proj_2/all", { projectId: null });
+    await screen.findByRole("region", { name: "Summary" });
+    await away(page);
+    page.returnTo("");
+    await waitFor(() => expect(page.subPath()).toBe("proj_2/all"));
+    await sleep(50);
+    expect(page.subPath()).toBe("proj_2/all");
+  });
+
+  it("NAV-4, NAV-10: the project the page last showed wins over bb's current project, with its own place", async () => {
     const w = world({
       projects: [
         { id: "proj_1", name: "Project one" },
@@ -1311,11 +1327,13 @@ describe("returning to the page", () => {
       ],
       terminals: [terminal({ id: "t1", title: "dev" })],
     });
-    const page = await mountPage(w, "proj_1/env_a/t1", { projectId: "proj_2" });
+    const page = await mountPage(w, "proj_2/all", { projectId: "proj_2" });
+    await screen.findByRole("region", { name: "Summary" });
+    page.goTo("proj_1/env_a/t1");
     await screen.findByTestId("terminal-view");
     await away(page);
     page.returnTo("");
-    await waitFor(() => expect(page.subPath()).toBe("proj_2/all"));
+    await waitFor(() => expect(page.subPath()).toBe("proj_1/env_a/t1"));
   });
 
   it("LIST-21, NAV-9: the filter is kept on return to the same project, also through the root route, and cleared by a project change", async () => {
