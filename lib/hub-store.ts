@@ -101,6 +101,13 @@ export interface Section {
   error: string | null;
 }
 
+/** LIST-17: how far the first thread scan has got. */
+export interface ScanProgress {
+  scanned: number;
+  /** Null until the project's threads are listed. */
+  total: number | null;
+}
+
 export interface HubView {
   projectId: string | null;
   environment: string;
@@ -114,6 +121,14 @@ export interface HubView {
   hints: ReadonlyMap<string, ServerHint>;
   homes: ReadonlyMap<string, string | null>;
   error: string | null;
+  /**
+   * LIST-10, LIST-17: the listing has succeeded, so an empty list means
+   * nothing is there. In All: the environments, the first thread scan, and
+   * every environment's own list (or its error) are in.
+   */
+  complete: boolean;
+  /** LIST-17: the first thread scan, while it runs; null otherwise. */
+  scan: ScanProgress | null;
 }
 
 interface Retained {
@@ -156,7 +171,17 @@ export class HubStore {
   private homes = new Map<string, string | null>();
   /** Environments whose own terminals were listed at least once, or failed to. */
   private attempted = new Set<string>();
+  /** Environments whose full listing, thread terminals included, succeeded. */
+  private listed = new Set<string>();
   private environmentErrors = new Map<string, string>();
+  /** LIST-17: a full thread scan of this project has succeeded. */
+  private threadsScanned = false;
+  /** The environments the last successful scan knew of, so their threads are in. */
+  private scannedEnvironments = new Set<string>();
+  private scanProgress: ScanProgress | null = null;
+  /** Bumped per scan, so a finished scan's late callbacks are ignored. */
+  private scanAttempt = 0;
+  private scanning: { generation: number; promise: Promise<void> } | null = null;
   private error: string | null = null;
   private view: HubView;
   private listeners = new Set<Listener>();
@@ -223,7 +248,11 @@ export class HubStore {
       this.threadTerminals.clear();
       this.retained.clear();
       this.attempted.clear();
+      this.listed.clear();
       this.environmentErrors.clear();
+      this.threadsScanned = false;
+      this.scannedEnvironments.clear();
+      this.scanProgress = null;
       this.error = null;
     }
     this.projectId = projectId;
@@ -258,7 +287,9 @@ export class HubStore {
     if (now) {
       if (this.environment === ALL) {
         // The first fast tick needs the environment list, which the scan loads.
-        void this.scanProject().then(() => this.refreshEnvironmentScopes());
+        // A scan lists new environments' own terminals as soon as it finds them.
+        void this.scanProject();
+        if (this.environments !== null) void this.refreshEnvironmentScopes();
         this.timers[0] = setTimeout(fast, FAST_REFRESH_MS);
         this.timers[1] = setTimeout(scan, SCAN_REFRESH_MS);
       } else {
@@ -283,20 +314,23 @@ export class HubStore {
     }
   }
 
-  private async loadEnvironments(): Promise<void> {
+  /** True when the project's environments were listed. */
+  private async loadEnvironments(): Promise<boolean> {
     const projectId = this.projectId;
     const generation = this.generation;
-    if (projectId === null) return;
+    if (projectId === null) return false;
     try {
       const environments = await this.sdk.environments.list({ projectId });
-      if (generation !== this.generation) return;
+      if (generation !== this.generation) return false;
       this.environments = environments.filter((env) => env.status !== "destroyed");
       for (const env of this.environments) this.requestHome(env.hostId);
       this.emit();
+      return true;
     } catch (error) {
-      if (generation !== this.generation) return;
+      if (generation !== this.generation) return false;
       this.error = message(error);
       this.emit();
+      return false;
     }
   }
 
@@ -310,6 +344,7 @@ export class HubStore {
       if (generation !== this.generation) return;
       this.mergeEnvironment(environmentId, snapshot);
       this.environmentErrors.delete(environmentId);
+      this.listed.add(environmentId);
     } catch (error) {
       if (generation !== this.generation) return;
       this.environmentErrors.set(environmentId, message(error));
@@ -344,16 +379,43 @@ export class HubStore {
     this.emit();
   }
 
-  /** LIST-14: the full scan of every thread in the project. */
-  async scanProject(): Promise<void> {
+  /** LIST-14: the full scan of every thread in the project; one at a time. */
+  scanProject(): Promise<void> {
     const projectId = this.projectId;
     const generation = this.generation;
-    if (projectId === null) return;
+    if (projectId === null) return Promise.resolve();
+    if (this.scanning?.generation === generation) return this.scanning.promise;
+    const promise = this.runScan(projectId, generation, ++this.scanAttempt).finally(() => {
+      if (this.scanning?.promise === promise) this.scanning = null;
+    });
+    this.scanning = { generation, promise };
+    return promise;
+  }
+
+  private async runScan(projectId: string, generation: number, attempt: number): Promise<void> {
+    const live = () => generation === this.generation && attempt === this.scanAttempt;
+    // LIST-17: progress is shown until the first scan succeeds.
+    const progress = (next: ScanProgress | null) => {
+      if (!live() || this.threadsScanned) return;
+      this.scanProgress = next;
+      this.emit();
+    };
+    progress({ scanned: 0, total: null });
     try {
-      await this.loadEnvironments();
+      if (!(await this.loadEnvironments())) {
+        progress(null);
+        return;
+      }
+      const known = new Set((this.environments ?? []).map((env) => env.id));
+      if (live() && this.environments?.some((env) => !this.attempted.has(env.id))) {
+        void this.refreshEnvironmentScopes();
+      }
       const threads = await listAllThreads(this.sdk, { projectId });
-      const terminals = await scanThreadTerminals(this.sdk, threads);
-      if (generation !== this.generation) return;
+      progress({ scanned: 0, total: threads.length });
+      const terminals = await scanThreadTerminals(this.sdk, threads, (scanned) =>
+        progress({ scanned, total: threads.length }),
+      );
+      if (!live()) return;
       const previous = this.threads;
       this.threads = new Map(threads.map((thread) => [thread.id, thread]));
       for (const id of [...this.threadTerminals.keys()]) {
@@ -362,10 +424,14 @@ export class HubStore {
       }
       for (const [id, list] of terminals) this.replaceThreadTerminals(id, list);
       this.recheckPending();
+      this.threadsScanned = true;
+      this.scannedEnvironments = known;
+      this.scanProgress = null;
       this.error = null;
     } catch (error) {
-      if (generation !== this.generation) return;
+      if (!live()) return;
       this.error = message(error);
+      this.scanProgress = null;
     }
     this.emit();
   }
@@ -661,6 +727,27 @@ export class HubStore {
     return { environmentTerminals, threads: [...threads.values()], threadTerminals };
   }
 
+  /**
+   * LIST-10: an environment's terminals are all known when its full listing
+   * succeeded, or when its own list did after a full project scan.
+   */
+  private covered(environmentId: string): boolean {
+    if (this.listed.has(environmentId)) return true;
+    return (
+      this.scannedEnvironments.has(environmentId) &&
+      this.attempted.has(environmentId) &&
+      !this.environmentErrors.has(environmentId)
+    );
+  }
+
+  /** Whether a section's empty state can be shown (or its error). */
+  private loaded(environmentId: string): boolean {
+    if (this.environment !== ALL) {
+      return this.covered(environmentId) || this.environmentErrors.has(environmentId);
+    }
+    return this.environmentTerminals.has(environmentId) || this.attempted.has(environmentId);
+  }
+
   private computeView(): HubView {
     const records =
       this.environment === ALL
@@ -673,7 +760,7 @@ export class HubStore {
         environment: toInfo(env),
         grouped,
         running: runningCount(grouped),
-        loaded: this.environmentTerminals.has(env.id) || this.attempted.has(env.id),
+        loaded: this.loaded(env.id),
         error: this.environmentErrors.get(env.id) ?? null,
       };
     });
@@ -684,12 +771,16 @@ export class HubStore {
         environment: { id: this.environment, name: this.environment, path: "", hostId: "" },
         grouped,
         running: runningCount(grouped),
-        loaded:
-          this.environmentTerminals.has(this.environment) || this.attempted.has(this.environment),
+        loaded: this.loaded(this.environment),
         error: this.environmentErrors.get(this.environment) ?? null,
       });
     }
     const rows = sections.flatMap((section) => orderedRows(section.grouped));
+    const complete =
+      this.environments !== null &&
+      (this.environment === ALL
+        ? this.threadsScanned && this.environments.every((env) => this.attempted.has(env.id))
+        : this.covered(this.environment));
     return {
       projectId: this.projectId,
       environment: this.environment,
@@ -701,6 +792,8 @@ export class HubStore {
       hints: new Map(this.hints),
       homes: new Map(this.homes),
       error: this.error,
+      complete,
+      scan: this.environment === ALL ? this.scanProgress : null,
     };
   }
 }

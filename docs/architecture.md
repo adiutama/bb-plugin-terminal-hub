@@ -41,7 +41,8 @@ useSdk().terminals ◄──► lib/terminal-transport.ts ◄──► lib/pump.
 | `lib/terminal-transport.ts` | The pump's reads, writes, and resizes over `useSdk().terminals`. |
 | `lib/cli.ts` | `bb terminal-hub list`: text and JSON over the same inventory. |
 | `components/terminals-page.tsx` | Pickers, list, actions, dialogs, and the selected view; routing. |
-| `components/session-list.tsx`, `components/session-row.tsx` | One environment's groups, or every environment's sections; one row. |
+| `components/session-list.tsx`, `components/session-row.tsx` | One environment's groups, or the sections of environments with terminals plus the empty-environment disclosure; one row. |
+| `components/list-header.tsx`, `lib/all-view.ts` | The New terminal split button and summary line; which sections show, the order ACT-7 follows, and the summary counts. |
 | `components/terminal-view.tsx` | Hosts one pump with find and the exit/status banner. |
 | `components/header-count.tsx` | The running count in the title bar. |
 

@@ -74,6 +74,32 @@ const twoEnvironments = () =>
     ],
   });
 
+/** `count` environments, `env_0` … named `wt-0` …, after env_a ("main"). */
+const manyEnvironments = (count: number) =>
+  world({
+    environments: [
+      ...world().environments,
+      ...Array.from({ length: count }, (_, i) => ({
+        id: `env_${i}`,
+        projectId: "proj_1",
+        name: `wt-${i}`,
+        branchName: null,
+        path: `/Users/me/wt-${i}`,
+        hostId: "host_1",
+        status: "ready",
+      })),
+    ],
+  });
+
+/** Holds a promise open until `release` is called. */
+function gate() {
+  let release: () => void = () => {};
+  const promise = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  return { promise, release };
+}
+
 describe("navigation", () => {
   it("NAV-1: registers one navPanel titled Terminals at path terminals", async () => {
     const app = await loadApp();
@@ -110,7 +136,7 @@ describe("navigation", () => {
     expect(await screen.findByRole("combobox", { name: "Environment" })).toHaveTextContent(
       "All environments",
     );
-    expect(await screen.findByRole("region", { name: "feature" })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Show 2 empty environments" })).toBeTruthy();
   });
 
   it("NAV-2: restores project, environment, and terminal from the URL", async () => {
@@ -196,12 +222,12 @@ describe("navigation", () => {
       terminal({ id: "b1", environmentId: "env_b" }),
     );
     await mountPage(w, "proj_1/env_a");
-    render(<HeaderCount />);
-    expect(await screen.findByText("2 running")).toBeTruthy();
+    let header = render(<HeaderCount />).container;
+    expect(await within(header).findByText("2 running")).toBeTruthy();
     cleanup();
     await mountPage(w, "proj_1/all");
-    render(<HeaderCount />);
-    expect(await screen.findByText("3 running")).toBeTruthy();
+    header = render(<HeaderCount />).container;
+    expect(await within(header).findByText("3 running")).toBeTruthy();
   });
 });
 
@@ -274,35 +300,168 @@ describe("session list", () => {
     expect(await screen.findByTestId("terminal-view")).toHaveAttribute("data-fresh");
   });
 
-  it("LIST-10: an environment with no terminals shows an empty state with New terminal", async () => {
+  it("LIST-9: in All with nothing selected, New terminal opens the menu, and a hidden empty environment can be chosen", async () => {
+    const page = await mountPage(twoEnvironments(), "proj_1/all");
+    await screen.findByRole("button", { name: "Show 2 empty environments" });
+    fireEvent.click(screen.getByRole("button", { name: "New terminal" }));
+    const menu = await screen.findByRole("menu");
+    expect(
+      within(menu)
+        .getAllByRole("menuitem")
+        .map((item) => item.textContent),
+    ).toEqual(["main", "feature"]);
+    fireEvent.click(within(menu).getByRole("menuitem", { name: "feature" }));
+    await waitFor(() => expect(page.subPath()).toBe("proj_1/all/term_new_1"));
+    expect(page.sdk.terminals.create).toHaveBeenCalledWith(
+      expect.objectContaining({ scope: { kind: "environment", environmentId: "env_b" } }),
+    );
+    const feature = await screen.findByRole("region", { name: "feature" });
+    expect(within(feature).getByText("zsh")).toBeTruthy();
+  });
+
+  it("LIST-9: the menu lists the selected environment first; from one environment, choosing another switches to it", async () => {
+    const page = await mountPage(twoEnvironments(), "proj_1/env_b");
+    const trigger = await screen.findByRole("button", { name: "New terminal in…" });
+    trigger.focus();
+    fireEvent.keyDown(trigger, { key: "Enter" });
+    const menu = await screen.findByRole("menu");
+    expect(
+      within(menu)
+        .getAllByRole("menuitem")
+        .map((item) => item.textContent),
+    ).toEqual(["feature", "main"]);
+    fireEvent.click(within(menu).getByRole("menuitem", { name: "main" }));
+    await waitFor(() => expect(page.subPath()).toBe("proj_1/env_a/term_new_1"));
+    expect(await screen.findByText("zsh")).toBeTruthy();
+  });
+
+  it("LIST-10: an environment with no terminals says so; the page says how to start one", async () => {
     await mountPage(world(), "proj_1/env_a");
     expect(await screen.findByText("No terminals here yet.")).toBeTruthy();
+    expect(
+      await screen.findByText("No terminals found. Start one with New terminal in…"),
+    ).toBeTruthy();
     expect(screen.getByRole("button", { name: "New terminal" })).toBeTruthy();
   });
 
-  it("LIST-13: All shows each environment as a collapsible section with its running count, empty ones collapsed", async () => {
-    const w = twoEnvironments();
-    w.terminals.push(terminal({ id: "a1", title: "dev" }));
+  it("LIST-13: All shows environments with terminals as expanded sections, in BB's order, and hides the empty ones", async () => {
+    const w = manyEnvironments(3);
+    w.terminals.push(
+      terminal({ id: "a1", title: "dev" }),
+      terminal({ id: "c1", title: "api", environmentId: "env_2" }),
+    );
     await mountPage(w, "proj_1/all");
     const main = await screen.findByRole("region", { name: "main" });
-    const feature = await screen.findByRole("region", { name: "feature" });
     await within(main).findByText("1 running");
-    expect(within(feature).getByText("0 running")).toBeTruthy();
     expect(within(main).getByRole("button", { name: "Collapse main" })).toHaveAttribute(
       "aria-expanded",
       "true",
     );
-    expect(within(feature).getByRole("button", { name: "Expand feature" })).toHaveAttribute(
-      "aria-expanded",
-      "false",
-    );
     expect(within(main).getByRole("region", { name: "Environment" })).toBeTruthy();
-    fireEvent.click(within(feature).getByRole("button", { name: "Expand feature" }));
-    expect(await within(feature).findByRole("button", { name: "New terminal" })).toBeTruthy();
+    expect(
+      screen
+        .getAllByRole("region")
+        .map((region) => region.getAttribute("aria-label"))
+        .filter((name) => name === "main" || name?.startsWith("wt-")),
+    ).toEqual(["main", "wt-2"]);
+    expect(screen.queryByRole("region", { name: "wt-0" })).toBeNull();
+
+    const disclosure = screen.getByRole("button", { name: "Show 2 empty environments" });
+    fireEvent.click(disclosure);
+    const hidden = await screen.findByRole("region", { name: "Empty environments" });
+    expect(
+      within(hidden)
+        .getAllByRole("button")
+        .map((b) => b.textContent),
+    ).toEqual(["wt-00 running", "wt-10 running"]);
+    expect(disclosure).toHaveTextContent("Hide empty environments");
+    expect(disclosure).toHaveAttribute("aria-expanded", "true");
+  });
+
+  it("LIST-13, LIST-10: forty empty environments are one disclosure, and the page says nothing is running", async () => {
+    await mountPage(manyEnvironments(39), "proj_1/all");
+    expect(await screen.findByRole("button", { name: "Show 40 empty environments" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /^Collapse|^Expand/ })).toBeNull();
+    expect(screen.getByText("No terminals found. Start one with New terminal in…")).toBeTruthy();
+  });
+
+  it("LIST-13, LIST-11: an environment whose last terminal exits keeps its section and shows the exit code", async () => {
+    const w = twoEnvironments();
+    w.threads.push(thread({ id: "thr_b", environmentId: "env_b" }));
+    w.terminals.push(
+      terminal({ id: "b1", title: "build", threadId: "thr_b", environmentId: "env_b" }),
+    );
+    const page = await mountPage(w, "proj_1/all");
+    const feature = await screen.findByRole("region", { name: "feature" });
+    await within(feature).findByText("build");
+    const session = w.terminals[0];
+    if (!session) throw new Error("fixture");
+    session.status = "exited";
+    session.exitCode = 3;
+    page.emitThreadChanged({ id: "thr_b", changes: ["terminals-changed"] });
+    expect(await within(feature).findByText("exit 3")).toBeInTheDocument();
+    expect(within(feature).getByText("0 running")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Show 1 empty environment" })).toBeTruthy();
+  });
+
+  it("LIST-17: while the first scan is slow, the list shows its progress and never says nothing is there", async () => {
+    const w = world({ threads: [thread({ id: "thr_1" }), thread({ id: "thr_2" })] });
+    const page = await mountPage(w, "proj_1/all");
+    const slow = gate();
+    const real = page.sdk.terminals.list.getMockImplementation();
+    page.sdk.terminals.list.mockImplementation(async (args) => {
+      if (args.scope.kind === "thread" && args.scope.threadId === "thr_2") await slow.promise;
+      return real?.(args) as never;
+    });
+    expect(await screen.findByText("Scanning threads… 1 of 2")).toBeTruthy();
+    expect(screen.queryByText(/No terminals found/)).toBeNull();
+    expect(screen.queryByRole("button", { name: /empty environment/ })).toBeNull();
+    slow.release();
+    expect(
+      await screen.findByText("No terminals found. Start one with New terminal in…"),
+    ).toBeTruthy();
+    expect(screen.queryByText(/Scanning threads/)).toBeNull();
+    expect(screen.getByRole("button", { name: "Show 1 empty environment" })).toBeTruthy();
+  });
+
+  it("LIST-17: a failed first scan shows the error, not an empty list", async () => {
+    const page = await mountPage(twoEnvironments(), "proj_1/all");
+    page.sdk.threads.list.mockRejectedValue(new Error("bb is restarting"));
+    expect(await screen.findByText("bb is restarting")).toBeTruthy();
+    expect(screen.queryByText(/No terminals found/)).toBeNull();
+    expect(screen.queryByRole("button", { name: /empty environment/ })).toBeNull();
+    expect(screen.getByText(/Could not list every terminal yet/)).toBeTruthy();
+  });
+
+  it("LIST-16: the summary counts running terminals, servers, and stale ones; stale opens the cleanup", async () => {
+    const w = world({
+      threads: [thread({ id: "thr_idle", title: "Release prep", status: "idle" })],
+      terminals: [
+        terminal({ id: "web", title: "dev server" }),
+        terminal({ id: "sh", title: "zsh" }),
+        terminal({ id: "left", title: "pnpm test", threadId: "thr_idle" }),
+      ],
+      output: { web: "  ➜  Local:   http://localhost:5173/\r\n" },
+    });
+    await mountPage(w, "proj_1/all");
+    const summary = await screen.findByRole("region", { name: "Summary" });
+    await waitFor(() => expect(summary).toHaveTextContent("3 running·1 server·1 stale"));
+    fireEvent.click(within(summary).getByRole("button", { name: "1 stale" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog).toHaveTextContent("Close all from settled threads?");
+    expect(dialog).toHaveTextContent("pnpm test");
+  });
+
+  it("LIST-16: leaves out zero servers and stale terminals", async () => {
+    await mountPage(world({ terminals: [terminal({ id: "sh" })] }), "proj_1/env_a");
+    const summary = await screen.findByRole("region", { name: "Summary" });
+    await waitFor(() => expect(summary).toHaveTextContent(/^1 running$/));
   });
 
   it("LIST-15: clicking an environment's section header selects that environment", async () => {
-    const page = await mountPage(twoEnvironments(), "proj_1/all");
+    const w = twoEnvironments();
+    w.terminals.push(terminal({ id: "a1" }));
+    const page = await mountPage(w, "proj_1/all");
     fireEvent.click(await screen.findByRole("button", { name: /^main/ }));
     await waitFor(() => expect(page.subPath()).toBe("proj_1/env_a"));
   });
@@ -453,6 +612,40 @@ describe("actions", () => {
     menu = await openRowMenu("two");
     fireEvent.click(within(menu).getByRole("menuitem", { name: "Close" }));
     await waitFor(() => expect(page.subPath()).toBe("proj_1/env_a"));
-    expect(await screen.findByText(/No terminals running here/)).toBeTruthy();
+    expect(await screen.findByText(/No terminals found/)).toBeTruthy();
   });
+
+  it("ACT-7: in All, the next selection skips a collapsed section and never wraps", async () => {
+    const w = manyEnvironments(2);
+    w.terminals.push(
+      terminal({ id: "a1", title: "one" }),
+      terminal({ id: "b1", title: "two", environmentId: "env_0" }),
+      terminal({ id: "c1", title: "three", environmentId: "env_1" }),
+    );
+    const page = await mountPage(w, "proj_1/all/a1");
+    fireEvent.click(await screen.findByRole("button", { name: "Collapse wt-0" }));
+    let menu = await openRowMenu("one");
+    fireEvent.click(within(menu).getByRole("menuitem", { name: "Close" }));
+    await waitFor(() => expect(page.subPath()).toBe("proj_1/all/c1"));
+    menu = await openRowMenu("three");
+    fireEvent.click(within(menu).getByRole("menuitem", { name: "Close" }));
+    await waitFor(() => expect(page.subPath()).toBe("proj_1/all"));
+  });
+
+  it("ACT-7: dismissing an environment's last row moves to the next environment's terminal", async () => {
+    const w = manyEnvironments(1);
+    w.terminals.push(
+      terminal({ id: "a1", title: "one" }),
+      terminal({ id: "b1", title: "two", environmentId: "env_0" }),
+    );
+    const page = await mountPage(w, "proj_1/all/a1");
+    await screen.findByTestId("terminal-view");
+    const session = w.terminals[0];
+    if (!session) throw new Error("fixture");
+    session.status = "exited";
+    session.exitCode = 0;
+    fireEvent.click(await screen.findByRole("button", { name: "Dismiss one" }, { timeout: 7000 }));
+    await waitFor(() => expect(page.subPath()).toBe("proj_1/all/b1"));
+    expect(screen.queryByRole("region", { name: "main" })).toBeNull();
+  }, 10_000);
 });

@@ -352,4 +352,231 @@ describe("hub store", () => {
     await vi.advanceTimersByTimeAsync(FAST_REFRESH_MS);
     expect(store.getView().rows[0]?.terminal.exitCode).toBe(7);
   });
+
+  it("LIST-17: shows the first scan's progress, and is complete only once it succeeds", async () => {
+    const w = world({ threads: [thread({ id: "thr_1" }), thread({ id: "thr_2" })] });
+    const bb = fakeSdk(w);
+    const real = bb.sdk.terminals.list.getMockImplementation();
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    bb.sdk.terminals.list.mockImplementation(async (args) => {
+      if (args.scope.kind === "thread" && args.scope.threadId === "thr_2") await gate;
+      return real?.(args) as never;
+    });
+    const store = new HubStore(bb.sdk);
+    stores.push(store);
+    store.start();
+    store.select("proj_1", ALL);
+    expect(store.getView().scan).toEqual({ scanned: 0, total: null });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(store.getView().scan).toEqual({ scanned: 1, total: 2 });
+    expect(store.getView().complete).toBe(false);
+
+    release();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(store.getView().scan).toBeNull();
+    expect(store.getView().complete).toBe(true);
+
+    // Later rescans run quietly.
+    await vi.advanceTimersByTimeAsync(SCAN_REFRESH_MS);
+    expect(store.getView().scan).toBeNull();
+  });
+
+  it("LIST-17: a failed first scan shows its error, stays incomplete, and the next scan tries again", async () => {
+    const w = world({ terminals: [terminal({ id: "a1" })] });
+    const bb = fakeSdk(w);
+    bb.sdk.threads.list.mockRejectedValueOnce(new Error("bb is restarting"));
+    const store = new HubStore(bb.sdk);
+    stores.push(store);
+    store.start();
+    store.select("proj_1", ALL);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(store.getView().error).toBe("bb is restarting");
+    expect(store.getView().scan).toBeNull();
+    expect(store.getView().complete).toBe(false);
+    // Rows it already has stay.
+    expect(store.getView().rows.map((row) => row.terminal.id)).toEqual(["a1"]);
+
+    await vi.advanceTimersByTimeAsync(SCAN_REFRESH_MS);
+    expect(store.getView().error).toBeNull();
+    expect(store.getView().complete).toBe(true);
+  });
+
+  it("LIST-17: a failed environment list is not a finished scan", async () => {
+    const bb = fakeSdk(world());
+    bb.sdk.environments.list.mockRejectedValueOnce(new Error("no such project"));
+    const store = new HubStore(bb.sdk);
+    stores.push(store);
+    store.start();
+    store.select("proj_1", ALL);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(store.getView().error).toBe("no such project");
+    expect(store.getView().complete).toBe(false);
+    expect(bb.sdk.threads.list).not.toHaveBeenCalled();
+  });
+
+  it("LIST-17: with no threads, the list waits for every environment's own terminals", async () => {
+    const bb = fakeSdk(world({ terminals: [terminal({ id: "a1" })] }));
+    const real = bb.sdk.terminals.list.getMockImplementation();
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    bb.sdk.terminals.list.mockImplementation(async (args) => {
+      if (args.scope.kind === "environment") await gate;
+      return real?.(args) as never;
+    });
+    const store = new HubStore(bb.sdk);
+    stores.push(store);
+    store.start();
+    store.select("proj_1", ALL);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(store.getView().scan).toBeNull();
+    expect(store.getView().complete).toBe(false);
+    release();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(store.getView().complete).toBe(true);
+    expect(store.getView().rows.map((row) => row.terminal.id)).toEqual(["a1"]);
+  });
+
+  it("LIST-17: scans never overlap, so an old scan cannot move the progress", async () => {
+    const w = world({ threads: [thread({ id: "thr_1" })] });
+    const bb = fakeSdk(w);
+    const real = bb.sdk.terminals.list.getMockImplementation();
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    bb.sdk.terminals.list.mockImplementation(async (args) => {
+      if (args.scope.kind === "thread") await gate;
+      return real?.(args) as never;
+    });
+    const store = new HubStore(bb.sdk);
+    stores.push(store);
+    store.start();
+    store.select("proj_1", ALL);
+    await vi.advanceTimersByTimeAsync(SCAN_REFRESH_MS * 2);
+    expect(listCalls(bb.sdk, "thread")).toHaveLength(1);
+    expect(store.getView().scan).toEqual({ scanned: 0, total: 1 });
+    release();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(store.getView().complete).toBe(true);
+  });
+
+  it("LIST-10: a single environment is complete once its listing succeeds", async () => {
+    const bb = fakeSdk(world());
+    const real = bb.sdk.terminals.list.getMockImplementation();
+    bb.sdk.terminals.list.mockRejectedValueOnce(new Error("host offline"));
+    const store = new HubStore(bb.sdk);
+    stores.push(store);
+    store.start();
+    store.select("proj_1", "env_a");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(store.getView().complete).toBe(false);
+    bb.sdk.terminals.list.mockImplementation(real as never);
+    await vi.advanceTimersByTimeAsync(FAST_REFRESH_MS);
+    expect(store.getView().complete).toBe(true);
+  });
+
+  it("LIST-10: switching from All to an environment while the first scan runs is not complete until its threads are listed", async () => {
+    const w = world({
+      threads: [thread({ id: "thr_1" })],
+      terminals: [terminal({ id: "t1", threadId: "thr_1" })],
+    });
+    const bb = fakeSdk(w);
+    const real = bb.sdk.terminals.list.getMockImplementation();
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    bb.sdk.terminals.list.mockImplementation(async (args) => {
+      if (args.scope.kind === "thread") await gate;
+      return real?.(args) as never;
+    });
+    const store = new HubStore(bb.sdk);
+    stores.push(store);
+    store.start();
+    store.select("proj_1", ALL);
+    await vi.advanceTimersByTimeAsync(FAST_REFRESH_MS);
+    store.select("proj_1", "env_a");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(store.getView().complete).toBe(false);
+    expect(store.getView().sections[0]?.loaded).toBe(false);
+    release();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(store.getView().complete).toBe(true);
+    expect(store.getView().rows.map((row) => row.terminal.id)).toEqual(["t1"]);
+  });
+
+  it("LIST-10: after a full scan in All, a picked environment is complete at once", async () => {
+    const w = world({ terminals: [terminal({ id: "a1" })] });
+    const { store } = open(w, ALL);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(store.getView().complete).toBe(true);
+    store.select("proj_1", "env_a");
+    expect(store.getView().complete).toBe(true);
+    expect(store.getView().sections[0]?.loaded).toBe(true);
+  });
+
+  it("LIST-17: a rescan that finds a new environment lists its terminals at once", async () => {
+    const w = world();
+    const { store } = open(w, ALL);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(store.getView().complete).toBe(true);
+    w.environments.push({
+      id: "env_new",
+      projectId: "proj_1",
+      name: "new",
+      branchName: null,
+      path: "/w/new",
+      hostId: "host_1",
+      status: "ready",
+    });
+    w.terminals.push(terminal({ id: "n1", environmentId: "env_new" }));
+    // The 30 s scan lands between two 5 s ticks.
+    await vi.advanceTimersByTimeAsync(SCAN_REFRESH_MS + 1);
+    expect(store.getView().complete).toBe(true);
+    expect(store.getView().rows.map((row) => row.terminal.id)).toEqual(["n1"]);
+  });
+
+  it("LIST-10: an environment newer than the last full scan is complete only once its threads are listed", async () => {
+    const w = world();
+    const bb = fakeSdk(w);
+    const store = new HubStore(bb.sdk);
+    stores.push(store);
+    store.start();
+    store.select("proj_1", ALL);
+    await vi.advanceTimersByTimeAsync(0);
+    w.environments.push({
+      id: "env_new",
+      projectId: "proj_1",
+      name: "new",
+      branchName: null,
+      path: "/w/new",
+      hostId: "host_1",
+      status: "ready",
+    });
+    w.threads.push(thread({ id: "thr_new", environmentId: "env_new" }));
+    w.terminals.push(terminal({ id: "n1", threadId: "thr_new", environmentId: "env_new" }));
+    // The rescan lists environments, then hangs on the thread list.
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const realThreads = bb.sdk.threads.list.getMockImplementation();
+    bb.sdk.threads.list.mockImplementation(async (args) => {
+      await gate;
+      return realThreads?.(args) as never;
+    });
+    await vi.advanceTimersByTimeAsync(SCAN_REFRESH_MS + 1);
+    store.select("proj_1", "env_new");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(store.getView().complete).toBe(false);
+    release();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(store.getView().complete).toBe(true);
+    expect(store.getView().rows.map((row) => row.terminal.id)).toEqual(["n1"]);
+  });
 });
