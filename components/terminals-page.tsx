@@ -4,6 +4,7 @@ import {
   type PluginNavPanelProps,
   useBbContext,
   useBbNavigate,
+  useRealtimeConnectionState,
   useSdk,
 } from "@get-bb/plugin-sdk/app";
 import {
@@ -188,6 +189,11 @@ export function TerminalsPage({ subPath }: PluginNavPanelProps) {
   useEffect(() => {
     store?.select(route.environment, route.terminalId);
   }, [store, route.environment, route.terminalId]);
+  // LIST-27: while bb's realtime connection is down, the rows are last known.
+  const connection = useRealtimeConnectionState();
+  useEffect(() => {
+    store?.setConnection(connection);
+  }, [store, connection]);
 
   const go = useCallback(
     (next: Route, replace: boolean) => {

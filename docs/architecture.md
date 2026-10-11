@@ -47,16 +47,23 @@ useSdk().terminals ◄──► lib/terminal-transport.ts ◄──► lib/pump.
 | `components/terminal-view.tsx` | Hosts one pump with find and the exit/status banner. |
 | `components/header-count.tsx` | The running count in the title bar, from the store for the URL's project. |
 
-Refresh: a single environment reloads in full every 5 s while the page is
-visible and on bb's `thread:changed` signal for its threads. All environments
-lists each environment's own terminals every 5 s, rescans every thread every
-30 s, and refreshes one thread when bb signals it changed. Hidden tabs do not
-poll.
+Refresh: environment terminals send no signal, so their own lists are polled
+every 5 s while the page is visible. Thread terminals follow bb's
+`thread:changed` signals: `terminals-changed` lists that thread's terminals,
+record changes fetch the thread, `thread-deleted` drops it, and the rest
+(`events-appended` above all) is ignored. Each scope has one request in flight
+and runs once more if signalled meanwhile. A full listing (the project scan in
+All, the environment in a single one) runs when the view opens, on return, when
+bb's realtime connection comes back, and every 2 minutes as a fallback, and
+every 5 s until it succeeds. `environment:changed` reloads the environment
+list. Away from the page the store stays subscribed but only marks dirty
+threads. Hidden tabs do not poll.
 
 Return: the page and the title bar take `hubStoreFor(sdk, projectId)` as they
 render. Leaving the page stops the store's timers and forgets what was
 confirmed, keeping the rows; coming back shows them as last known, checks the
-selected terminal, then its environment, then scans. Every write to a list
+selected terminal, then its environment, then the threads marked while away,
+then scans. Every write to a list
 carries the sequence number of the request (or action) that produced it, so a
 late answer never replaces newer data.
 

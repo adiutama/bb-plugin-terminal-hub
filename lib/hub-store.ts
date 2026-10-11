@@ -39,12 +39,23 @@ import type { TransportSdk } from "./terminal-transport";
 
 /** LIST-8, LIST-14: environment terminals; also the whole single-environment view. */
 export const FAST_REFRESH_MS = 5_000;
-/** LIST-14: full rescan of every thread's terminals in the All view. */
-export const SCAN_REFRESH_MS = 30_000;
+/** LIST-8, LIST-14: the fallback full listing, in case a signal was missed. */
+export const SCAN_REFRESH_MS = 120_000;
 /** Coalesces bursts of thread change signals into one refresh. */
 export const SIGNAL_DEBOUNCE_MS = 250;
 /** LIST-28: how long a return waits for the selected terminal before going on. */
 export const RECONCILE_WAIT_MS = 2_000;
+/** Typing into a thread terminal signals every key; refresh at least this often. */
+export const SIGNAL_MAX_WAIT_MS = 1_000;
+
+/** LIST-30: thread changes that alter its title, state, or environment. */
+const RECORD_CHANGES = [
+  "thread-created",
+  "archived-changed",
+  "status-changed",
+  "title-changed",
+  "environment-changed",
+];
 
 export interface EnvironmentRecord {
   id: string;
@@ -63,7 +74,40 @@ export interface ProjectRecord {
 export interface ThreadChangedEvent {
   id?: string;
   changes: readonly string[];
-  metadata?: { projectId?: string };
+  metadata?: {
+    projectId?: string;
+    statusChange?: { status: string; latestAttentionAt: number };
+  };
+}
+
+export interface EnvironmentChangedEvent {
+  id?: string;
+  changes: readonly string[];
+}
+
+/** bb's realtime connection, which delivers the signals above. */
+export interface ConnectionEvent {
+  state: "connected" | "connecting" | "disconnected";
+  reconnected: boolean;
+}
+
+type Subscription =
+  | { event: "thread:changed"; callback: (event: ThreadChangedEvent) => void }
+  | { event: "environment:changed"; callback: (event: EnvironmentChangedEvent) => void }
+  | { event: "realtime:connection"; callback: (event: ConnectionEvent) => void };
+
+/** LIST-30: a request in flight; `next` settles with its re-run, if one was asked for. */
+interface Flight {
+  promise: Promise<boolean>;
+  visit: number;
+  next: { promise: Promise<boolean>; settle: (result: Promise<boolean> | boolean) => void } | null;
+}
+
+/** LIST-30: what a thread's signals asked for since it was last fetched. */
+interface ThreadNeeds {
+  record: boolean;
+  terminals: boolean;
+  deleted: boolean;
 }
 
 export interface HubSdk extends InventorySdk, ActionsSdk, VerifySdk {
@@ -89,10 +133,7 @@ export interface HubSdk extends InventorySdk, ActionsSdk, VerifySdk {
   environments: { list(args: { projectId: string }): Promise<EnvironmentRecord[]> };
   projects: { list(): Promise<ProjectRecord[]> };
   hosts: { directory(args: { hostId: string }): Promise<{ directory: string }> };
-  subscribe(args: {
-    event: "thread:changed";
-    callback: (event: ThreadChangedEvent) => void;
-  }): () => void;
+  subscribe(args: Subscription): () => void;
 }
 
 export interface EnvironmentInfo {
@@ -241,8 +282,19 @@ export class HubStore {
   private views = new Map<string, { version: number; view: HubView }>();
   private listeners = new Set<Listener>();
   private timers: ReturnType<typeof setTimeout>[] = [];
-  private signalTimers = new Map<string, ReturnType<typeof setTimeout>>();
-  private unsubscribe: (() => void) | null = null;
+  private signalTimers = new Map<string, { timer: ReturnType<typeof setTimeout>; first: number }>();
+  private subscribed = false;
+  /** LIST-30, LIST-31: threads to fetch, marked by signals; kept while away. */
+  private dirtyThreads = new Map<string, ThreadNeeds>();
+  /** LIST-30: one request per scope; `again` runs it once more when it ends. */
+  private flights = new Map<string, Flight>();
+  /** Threads whose record is being fetched now (LIST-30). */
+  private fetchingRecords = new Map<string, number>();
+  /** LIST-27: bb's realtime connection, as its own signal and the page's hook see it. */
+  private socketUp = true;
+  private hookUp = true;
+  /** When the last full listing started, for the 2-minute fallback. */
+  private lastFull = 0;
 
   constructor(
     private readonly sdk: HubSdk,
@@ -320,17 +372,32 @@ export class HubStore {
   private begin(): void {
     this.live = true;
     const visit = this.visit;
-    this.unsubscribe = this.sdk.subscribe({
-      event: "thread:changed",
-      callback: (event) => this.onThreadChanged(event),
-    });
+    this.subscribeOnce();
     document.addEventListener("visibilitychange", this.onVisibility);
     this.emit();
     if (this.returned) void this.returnSequence(visit);
     else {
-      this.kick();
+      this.full();
       this.arm();
     }
+  }
+
+  /** LIST-31: subscribed from the first visit until bb reloads, away included. */
+  private subscribeOnce(): void {
+    if (this.subscribed) return;
+    this.subscribed = true;
+    this.sdk.subscribe({
+      event: "thread:changed",
+      callback: (event) => this.onThreadChanged(event),
+    });
+    this.sdk.subscribe({
+      event: "environment:changed",
+      callback: (event) => this.onEnvironmentChanged(event),
+    });
+    this.sdk.subscribe({
+      event: "realtime:connection",
+      callback: (event) => this.onConnection(event),
+    });
   }
 
   /** LIST-27: the page was left. Keep the rows; forget what was confirmed. */
@@ -339,11 +406,14 @@ export class HubStore {
     if (this.attachments > 0 || !this.live) return;
     this.live = false;
     this.clearTimers();
-    for (const timer of this.signalTimers.values()) clearTimeout(timer);
+    for (const { timer } of this.signalTimers.values()) clearTimeout(timer);
     this.signalTimers.clear();
-    this.unsubscribe?.();
-    this.unsubscribe = null;
     document.removeEventListener("visibilitychange", this.onVisibility);
+    this.unconfirm();
+  }
+
+  /** LIST-27: rows stay, but nothing counts as confirmed any more. */
+  private unconfirm(): void {
     this.visit++;
     this.returned = this.hasRows() || this.environments !== null;
     this.confirmed.clear();
@@ -367,8 +437,9 @@ export class HubStore {
   }
 
   /**
-   * LIST-28: on return, the selected terminal first, then the selected
-   * environment, then everything else on the usual cadence.
+   * LIST-28: on return (or reconnect), the selected terminal first, then the
+   * selected environment, then the threads that changed meanwhile, then the
+   * full listing; then the usual cadence.
    */
   private async returnSequence(visit: number): Promise<void> {
     if (hidden()) {
@@ -385,13 +456,15 @@ export class HubStore {
     if (this.environment === ALL) {
       const own = this.selectedEnvironment();
       if (own !== null) await this.refreshEnvironmentScopes([own]);
-      if (!still()) return;
-      this.kick();
     } else {
       await this.refreshEnvironment();
-      if (!still()) return;
-      void this.loadEnvironments();
     }
+    if (!still()) return;
+    await mapLimited([...this.dirtyThreads.keys()], SCAN_CONCURRENCY, (id) =>
+      this.fetchThreadOnce(id),
+    );
+    if (!still()) return;
+    this.full(this.environment !== ALL);
     this.arm();
   }
 
@@ -402,7 +475,7 @@ export class HubStore {
       this.returnPending = false;
       void this.returnSequence(this.visit);
     } else {
-      this.kick();
+      this.fast();
       this.arm();
     }
   };
@@ -412,9 +485,13 @@ export class HubStore {
     this.timers = [];
   }
 
-  /** Refreshes what the page shows, now. */
-  private kick(): void {
+  /**
+   * LIST-8, LIST-14: everything the page shows, listed now. With `listed`,
+   * a single environment's own full listing has just run.
+   */
+  private full(listed = false): void {
     if (!this.live || hidden()) return;
+    this.lastFull = Date.now();
     if (this.environment === ALL) {
       // The first fast tick needs the environment list, which the scan loads.
       // A scan lists new environments' own terminals as soon as it finds them.
@@ -422,27 +499,74 @@ export class HubStore {
       if (this.environments !== null) void this.refreshEnvironmentScopes();
     } else {
       void this.loadEnvironments();
-      void this.refreshEnvironment();
+      if (!listed) void this.refreshEnvironment();
     }
   }
 
-  /** Arms the refresh cadence (LIST-8, LIST-14). */
+  /** Refreshes what the page shows, now: the view changed. */
+  private kick(): void {
+    this.full();
+  }
+
+  /**
+   * LIST-8, LIST-14: environment terminals, which send no signal. Until the
+   * view is complete (a failed listing, say), the full listing is tried instead.
+   */
+  private fast(): void {
+    if (!this.live || hidden()) return;
+    if (this.environment !== ALL && !this.environmentsListed) void this.loadEnvironments();
+    if (!this.isComplete(this.environment)) this.full();
+    else if (this.environment === ALL) void this.refreshEnvironmentScopes();
+    else void this.refreshEnvironmentScopes([this.environment]);
+  }
+
+  /** Arms the cadence: environment terminals every 5 s, the full listing every 2 min. */
   private arm(): void {
     this.clearTimers();
     if (!this.live || hidden()) return;
     const fast = () => {
-      if (this.environment !== ALL && !this.environmentsListed) void this.loadEnvironments();
-      void (this.environment === ALL ? this.refreshEnvironmentScopes() : this.refreshEnvironment());
+      this.fast();
       this.timers[0] = setTimeout(fast, FAST_REFRESH_MS);
     };
     this.timers[0] = setTimeout(fast, FAST_REFRESH_MS);
-    if (this.environment === ALL) {
-      const scan = () => {
-        void this.scanProject();
-        this.timers[1] = setTimeout(scan, SCAN_REFRESH_MS);
-      };
-      this.timers[1] = setTimeout(scan, SCAN_REFRESH_MS);
+    const full = () => {
+      this.full();
+      this.timers[1] = setTimeout(full, SCAN_REFRESH_MS);
+    };
+    this.timers[1] = setTimeout(full, Math.max(0, this.lastFull + SCAN_REFRESH_MS - Date.now()));
+  }
+
+  /**
+   * LIST-30: runs `run` unless a request for `key` is in flight. With
+   * `again`, a request already in flight runs once more when it ends, and the
+   * caller gets that re-run's result.
+   */
+  private single(key: string, run: () => Promise<boolean>, again = false): Promise<boolean> {
+    const flight = this.flights.get(key);
+    // A request from before a return or reconnect cannot confirm this visit,
+    // and may never answer: start a new one beside it.
+    if (flight && flight.visit === this.visit) {
+      if (!again) return flight.promise;
+      if (!flight.next) {
+        let settle: (result: Promise<boolean> | boolean) => void = () => {};
+        const promise = new Promise<boolean>((resolve) => {
+          settle = resolve;
+        });
+        flight.next = { promise, settle };
+      }
+      return flight.next.promise;
     }
+    const entry: Flight = { promise: Promise.resolve(false), visit: this.visit, next: null };
+    entry.promise = run().finally(() => {
+      const next = entry.next;
+      if (this.flights.get(key) === entry) this.flights.delete(key);
+      if (!next) return;
+      // Superseded, or the page was left: nobody needs the re-run any more.
+      if (entry.visit !== this.visit || !this.live) next.settle(false);
+      else next.settle(this.single(key, run));
+    });
+    this.flights.set(key, entry);
+    return entry.promise;
   }
 
   // ── ordering ────────────────────────────────────────────────────────────
@@ -464,8 +588,12 @@ export class HubStore {
 
   // ── loading ─────────────────────────────────────────────────────────────
 
-  /** True when the project's environments were listed. */
-  private async loadEnvironments(): Promise<boolean> {
+  /** True when the project's environments were listed; one request at a time. */
+  private loadEnvironments(again = false): Promise<boolean> {
+    return this.single("environments", () => this.listEnvironments(), again);
+  }
+
+  private async listEnvironments(): Promise<boolean> {
     const visit = this.visit;
     const seq = this.tick();
     try {
@@ -487,9 +615,13 @@ export class HubStore {
     }
   }
 
-  /** LIST-8: one environment, all of it. True when it was listed. */
-  async refreshEnvironment(environmentId: string = this.environment): Promise<boolean> {
-    if (environmentId === ALL) return false;
+  /** LIST-8: one environment, all of it; one request at a time. True when it was listed. */
+  refreshEnvironment(environmentId: string = this.environment): Promise<boolean> {
+    if (environmentId === ALL) return Promise.resolve(false);
+    return this.single(`env:${environmentId}`, () => this.listEnvironment(environmentId));
+  }
+
+  private async listEnvironment(environmentId: string): Promise<boolean> {
     const visit = this.visit;
     const seq = this.tick();
     let ok = false;
@@ -510,34 +642,34 @@ export class HubStore {
     return ok;
   }
 
-  /** LIST-14: environments' own terminals, all or `only` these. True when all were listed. */
+  /**
+   * LIST-14: environments' own terminals, every environment or `only` these;
+   * one request per set at a time. True when all were listed.
+   */
   async refreshEnvironmentScopes(only?: readonly string[]): Promise<boolean> {
-    const visit = this.visit;
-    const environments = (this.environments ?? []).filter(
-      (env) => only === undefined || only.includes(env.id),
+    const ids = only ?? (this.environments ?? []).map((env) => env.id);
+    const results = await mapLimited(ids, SCAN_CONCURRENCY, (id) =>
+      this.single(`own:${id}`, () => this.listOwn(id)),
     );
-    const seq = this.tick();
-    const lists = await mapLimited(environments, SCAN_CONCURRENCY, async (env) => {
-      try {
-        return await listEnvironmentTerminals(this.sdk, env.id);
-      } catch (error) {
-        return message(error);
-      }
-    });
-    let ok = true;
-    environments.forEach((env, index) => {
-      const list = lists[index];
-      if (typeof list === "string") {
-        ok = false;
-        if (visit === this.visit) this.environmentErrors.set(env.id, list);
-      } else if (list) {
-        this.replaceEnvironmentTerminals(env.id, list, seq);
-        if (visit === this.visit) this.environmentErrors.delete(env.id);
-      }
-      if (visit === this.visit) this.attempted.add(env.id);
-    });
     this.recheckPending();
     this.emit();
+    return results.every(Boolean);
+  }
+
+  /** One environment's own terminals; the caller emits. */
+  private async listOwn(environmentId: string): Promise<boolean> {
+    const visit = this.visit;
+    const seq = this.tick();
+    let ok = true;
+    try {
+      const list = await listEnvironmentTerminals(this.sdk, environmentId);
+      this.replaceEnvironmentTerminals(environmentId, list, seq);
+      if (visit === this.visit) this.environmentErrors.delete(environmentId);
+    } catch (error) {
+      ok = false;
+      if (visit === this.visit) this.environmentErrors.set(environmentId, message(error));
+    }
+    if (visit === this.visit) this.attempted.add(environmentId);
     return ok;
   }
 
@@ -624,20 +756,156 @@ export class HubStore {
     }
   }
 
-  /** LIST-14: one thread, at once, when bb says its terminals changed. */
-  async refreshThread(threadId: string): Promise<void> {
+  /** LIST-30: fetches what a thread's signals asked for; one request per thread. */
+  private fetchThreadOnce(threadId: string): Promise<boolean> {
+    return this.single(`thread:${threadId}`, () => this.fetchThread(threadId), true);
+  }
+
+  private async fetchThread(threadId: string): Promise<boolean> {
+    const needs = this.dirtyThreads.get(threadId);
+    if (!needs) return true;
+    this.dirtyThreads.delete(threadId);
     const seq = this.tick();
-    try {
-      const [thread, list] = await Promise.all([
-        this.sdk.threads.get({ threadId }),
-        listThreadTerminals(this.sdk, threadId),
-      ]);
-      if (this.accept(`record:${thread.id}`, seq)) this.threads.set(thread.id, thread);
-      this.replaceThreadTerminals(threadId, list, seq);
+    if (needs.deleted) {
+      this.dropThread(threadId, seq);
       this.emit();
-    } catch {
-      // A deleted thread or a hiccup: the next scan settles it.
+      return true;
     }
+    const withRecord = needs.record || !this.threads.has(threadId);
+    const counted = (delta: number) => {
+      const count = (this.fetchingRecords.get(threadId) ?? 0) + delta;
+      if (count > 0) this.fetchingRecords.set(threadId, count);
+      else this.fetchingRecords.delete(threadId);
+    };
+    if (withRecord) counted(1);
+    try {
+      const [record, list] = await Promise.all([
+        withRecord ? this.sdk.threads.get({ threadId }) : Promise.resolve(null),
+        needs.terminals ? listThreadTerminals(this.sdk, threadId) : Promise.resolve(null),
+      ]);
+      if (record && this.accept(`record:${threadId}`, seq)) this.threads.set(threadId, record);
+      if (list) this.replaceThreadTerminals(threadId, list, seq);
+      this.emit();
+      return true;
+    } catch (error) {
+      // Gone: as if bb had said so. Anything else: the next full listing settles it.
+      if (isNotFound(error)) this.dropThread(threadId, seq);
+      this.emit();
+      return false;
+    } finally {
+      if (withRecord) counted(-1);
+    }
+  }
+
+  /** LIST-30: a deleted thread's terminals are gone; running ones are checked (LIST-11). */
+  private dropThread(threadId: string, seq: number): void {
+    this.replaceThreadTerminals(threadId, [], seq, this.threads.get(threadId) ?? null);
+    if (this.accept(`record:${threadId}`, seq)) this.threads.delete(threadId);
+  }
+
+  /**
+   * LIST-30: only changes that touch the list are acted on; LIST-31: while
+   * away, they are only marked.
+   */
+  private onThreadChanged(event: ThreadChangedEvent): void {
+    const id = event.id;
+    if (id === undefined) return;
+    const known = this.threads.get(id);
+    const inProject =
+      known !== undefined ||
+      this.threadTerminals.has(id) ||
+      event.metadata?.projectId === this.projectId;
+    if (!inProject) return;
+    const changes = new Set(event.changes);
+    const needs = this.dirtyThreads.get(id) ?? { record: false, terminals: false, deleted: false };
+    if (changes.has("thread-deleted")) needs.deleted = true;
+    if (changes.has("terminals-changed")) needs.terminals = true;
+    const recordChanges = RECORD_CHANGES.filter((change) => changes.has(change));
+    const status = event.metadata?.statusChange;
+    // The signal carries the new status: no request needed, unless a fetch of
+    // the thread is pending or running, whose answer must not be thrown away.
+    const fetching = (this.fetchingRecords.get(id) ?? 0) > 0 || needs.record;
+    if (
+      known &&
+      status &&
+      !fetching &&
+      recordChanges.length === 1 &&
+      recordChanges[0] === "status-changed"
+    ) {
+      if (this.accept(`record:${id}`, this.tick())) {
+        this.threads.set(id, {
+          ...known,
+          status: status.status,
+          latestAttentionAt: status.latestAttentionAt,
+        });
+        this.emit();
+      }
+    } else if (recordChanges.length > 0 && (known || changes.has("thread-created"))) {
+      needs.record = true;
+    } else if (changes.has("environment-changed")) {
+      // A thread moved in from elsewhere brings its terminals along.
+      needs.record = true;
+    }
+    if (changes.has("environment-changed")) needs.terminals = true;
+    if (!needs.deleted && !needs.record && !needs.terminals) return;
+    this.dirtyThreads.set(id, needs);
+    if (this.live) this.debounceThread(id);
+  }
+
+  /** Coalesces a thread's signals, but never waits more than SIGNAL_MAX_WAIT_MS. */
+  private debounceThread(threadId: string): void {
+    const now = Date.now();
+    const pending = this.signalTimers.get(threadId);
+    if (pending) clearTimeout(pending.timer);
+    const first = pending?.first ?? now;
+    const wait = Math.max(0, Math.min(SIGNAL_DEBOUNCE_MS, first + SIGNAL_MAX_WAIT_MS - now));
+    const timer = setTimeout(() => {
+      this.signalTimers.delete(threadId);
+      if (this.live) void this.fetchThreadOnce(threadId);
+    }, wait);
+    this.signalTimers.set(threadId, { timer, first });
+  }
+
+  /** LIST-14: an environment was created or deleted, so list them again. */
+  private onEnvironmentChanged(event: EnvironmentChangedEvent): void {
+    const relevant = event.changes.some(
+      (change) => change === "environment-created" || change === "environment-deleted",
+    );
+    // LIST-31: away, nothing to note: a return lists the environments anyway.
+    if (!relevant || !this.live) return;
+    void this.loadEnvironments(true).then((ok) => {
+      const unlisted = (this.environments ?? [])
+        .filter((env) => !this.attempted.has(env.id))
+        .map((env) => env.id);
+      if (ok && unlisted.length > 0) void this.refreshEnvironmentScopes(unlisted);
+    });
+  }
+
+  /** LIST-27: the connection dropped, or came back; when back, confirm again. */
+  private onConnection(event: ConnectionEvent): void {
+    const up = event.state === "connected";
+    const was = this.socketUp;
+    this.socketUp = up;
+    if (up && (event.reconnected || !was)) this.reconnected();
+    else if (up !== was) this.emit();
+  }
+
+  /**
+   * LIST-27: the page's view of the same connection
+   * (`useRealtimeConnectionState`); a store made while it is down is not live.
+   */
+  setConnection(state: "connected" | "connecting" | "reconnecting"): void {
+    const up = state === "connected";
+    if (up === this.hookUp) return;
+    this.hookUp = up;
+    if (up) this.reconnected();
+    else this.emit();
+  }
+
+  private reconnected(): void {
+    // Signals may have been missed: everything is last known until confirmed again.
+    this.unconfirm();
+    if (this.live) void this.returnSequence(this.visit);
   }
 
   /**
@@ -651,34 +919,6 @@ export class HubStore {
       this.refreshEnvironmentScopes(),
     ]);
     return scanned && own;
-  }
-
-  private onThreadChanged(event: ThreadChangedEvent): void {
-    const id = event.id;
-    if (id === undefined) return;
-    const known = this.threads.get(id);
-    const inProject = known !== undefined || event.metadata?.projectId === this.projectId;
-    if (!inProject) return;
-    if (this.environment !== ALL) {
-      if (known && known.environmentId !== this.environment && !this.threadTerminals.has(id)) {
-        return;
-      }
-      this.debounce("environment", () => void this.refreshEnvironment());
-    } else {
-      this.debounce(id, () => void this.refreshThread(id));
-    }
-  }
-
-  private debounce(key: string, run: () => void): void {
-    const pending = this.signalTimers.get(key);
-    if (pending) clearTimeout(pending);
-    this.signalTimers.set(
-      key,
-      setTimeout(() => {
-        this.signalTimers.delete(key);
-        if (this.live) run();
-      }, SIGNAL_DEBOUNCE_MS),
-    );
   }
 
   // ── the selected terminal ───────────────────────────────────────────────
@@ -1112,8 +1352,10 @@ export class HubStore {
   }
 
   private computeView(environment: string): HubView {
+    const connected = this.socketUp && this.hookUp;
     const lastKnown =
-      this.returned && !this.confirmed.has(environment) && !this.isConfirmed(environment);
+      !connected ||
+      (this.returned && !this.confirmed.has(environment) && !this.isConfirmed(environment));
     const records =
       environment === ALL
         ? (this.environments ?? [])
@@ -1153,7 +1395,7 @@ export class HubStore {
       error: this.currentError(),
       complete: this.isComplete(environment) && !lastKnown,
       lastKnown,
-      freshness: !lastKnown ? "live" : failed ? "reconnecting" : "updating",
+      freshness: !lastKnown ? "live" : failed || !connected ? "reconnecting" : "updating",
       scan: environment === ALL && !this.everScanned ? this.scanProgress : null,
       vanished: new Set(this.vanished),
     };

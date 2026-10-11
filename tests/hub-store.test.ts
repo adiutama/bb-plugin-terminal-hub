@@ -152,7 +152,7 @@ describe("hub store", () => {
     expect(sdk.hosts.directory).toHaveBeenCalledWith({ hostId: "host_1" });
   });
 
-  it("LIST-14: in All, lists environment terminals every 5 s, rescans threads every 30 s, and refreshes a signalled thread at once", async () => {
+  it("LIST-14: in All, lists environment terminals every 5 s, rescans threads every 2 minutes, and lists a signalled thread's terminals at once", async () => {
     const w = world({
       environments: [
         ...world().environments,
@@ -191,7 +191,8 @@ describe("hub store", () => {
     await vi.advanceTimersByTimeAsync(300);
     expect(ids()).toContain("term_signal");
     expect(listCalls(sdk, "thread").length).toBe(scans + 1);
-    expect(sdk.threads.get).toHaveBeenCalledWith({ threadId: "thr_1" });
+    // The thread is known, and its terminals changing does not change it.
+    expect(sdk.threads.get).not.toHaveBeenCalled();
   });
 
   it("LIST-13: counts running terminals per environment section", async () => {
@@ -235,22 +236,31 @@ describe("hub store", () => {
   });
 
   it("LIST-1: a late answer to an older request never replaces a newer listing", async () => {
-    const w = world({ terminals: [terminal({ id: "a1" })] });
-    const { sdk, ids } = open(w, "env_a");
+    const w = world({ threads: [thread({ id: "thr_1" })] });
+    const { sdk, ids, emitThreadChanged } = open(w, ALL);
     await vi.advanceTimersByTimeAsync(0);
+    // The fallback scan asks for thr_1's terminals; bb answers late, with none.
+    const real = sdk.terminals.list.getMockImplementation();
     let release!: () => void;
-    sdk.terminals.list.mockImplementationOnce(
-      () =>
-        new Promise((resolve) => {
-          release = () => resolve({ sessions: [terminal({ id: "late" })] });
-        }),
-    );
-    await vi.advanceTimersByTimeAsync(FAST_REFRESH_MS);
-    await vi.advanceTimersByTimeAsync(FAST_REFRESH_MS);
-    expect(ids()).toEqual(["a1"]);
+    sdk.terminals.list.mockImplementation(async (args) => {
+      if (args.scope.kind === "thread" && !release) {
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        return { sessions: [] };
+      }
+      return real?.(args) as never;
+    });
+    await vi.advanceTimersByTimeAsync(SCAN_REFRESH_MS);
+    expect(release).toBeDefined();
+    // Meanwhile a terminal starts, and its signal is answered at once.
+    w.terminals.push(terminal({ id: "t_new", threadId: "thr_1" }));
+    emitThreadChanged({ id: "thr_1", changes: ["terminals-changed"] });
+    await vi.advanceTimersByTimeAsync(300);
+    expect(ids()).toEqual(["t_new"]);
     release();
     await vi.advanceTimersByTimeAsync(0);
-    expect(ids()).toEqual(["a1"]);
+    expect(ids()).toEqual(["t_new"]);
   });
 
   it("LIST-27: one store per project, kept for the session", () => {
@@ -273,7 +283,7 @@ describe("hub store", () => {
     if (!session) throw new Error("fixture");
     session.status = "exited";
     session.exitCode = null;
-    await vi.advanceTimersByTimeAsync(FAST_REFRESH_MS);
+    await vi.advanceTimersByTimeAsync(SCAN_REFRESH_MS);
     const group = store.getView().sections[0]?.grouped.threads[0];
     expect(group?.thread.title).toBe("Throwaway");
     expect(group?.rows.map((row) => [row.terminal.id, row.terminal.status])).toEqual([
@@ -884,5 +894,441 @@ describe("hub store", () => {
     expect(sdk.terminals.get.mock.invocationCallOrder[0]).toBeLessThan(
       sdk.threads.list.mock.invocationCallOrder[0] ?? -1,
     );
+  });
+
+  describe("signals", () => {
+    const twoEnvs = () =>
+      world({
+        environments: [
+          ...world().environments,
+          {
+            id: "env_b",
+            projectId: "proj_1",
+            name: "feature",
+            branchName: null,
+            path: "/Users/me/wt",
+            hostId: "host_1",
+            status: "ready",
+          },
+        ],
+        threads: [thread({ id: "thr_1", title: "One" })],
+        terminals: [terminal({ id: "t1", threadId: "thr_1" })],
+      });
+    const counts = (sdk: ReturnType<typeof fakeSdk>["sdk"]) => ({
+      lists: sdk.terminals.list.mock.calls.length,
+      gets: sdk.threads.get.mock.calls.length,
+      terminalGets: sdk.terminals.get.mock.calls.length,
+      threadLists: sdk.threads.list.mock.calls.length,
+    });
+
+    it("LIST-30: ignores events-appended and other changes that do not touch the list", async () => {
+      const { sdk, emitThreadChanged } = open(twoEnvs(), ALL);
+      await vi.advanceTimersByTimeAsync(0);
+      const before = counts(sdk);
+      emitThreadChanged({ id: "thr_1", changes: ["events-appended"] });
+      emitThreadChanged({ id: "thr_1", changes: ["read-state-changed", "queue-changed"] });
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(counts(sdk)).toEqual(before);
+    });
+
+    it("LIST-30: terminals-changed lists that thread's terminals; an unknown thread of the project is fetched too", async () => {
+      const w = twoEnvs();
+      const { sdk, ids, emitThreadChanged } = open(w, ALL);
+      await vi.advanceTimersByTimeAsync(0);
+      sdk.terminals.list.mockClear();
+      w.terminals.push(terminal({ id: "t2", threadId: "thr_1" }));
+      emitThreadChanged({ id: "thr_1", changes: ["terminals-changed"] });
+      await vi.advanceTimersByTimeAsync(300);
+      expect(sdk.terminals.list.mock.calls).toEqual([
+        [{ scope: { kind: "thread", threadId: "thr_1" } }],
+      ]);
+      expect(sdk.threads.get).not.toHaveBeenCalled();
+      expect(ids()).toEqual(["t1", "t2"]);
+
+      w.threads.push(thread({ id: "thr_new", title: "New", environmentId: "env_b" }));
+      w.terminals.push(terminal({ id: "t3", threadId: "thr_new", environmentId: "env_b" }));
+      emitThreadChanged({
+        id: "thr_new",
+        changes: ["terminals-changed"],
+        metadata: { projectId: "proj_1" },
+      });
+      await vi.advanceTimersByTimeAsync(300);
+      expect(sdk.threads.get).toHaveBeenCalledWith({ threadId: "thr_new" });
+      expect(ids()).toContain("t3");
+
+      // Another project's thread is none of this store's business.
+      const before = counts(sdk);
+      emitThreadChanged({
+        id: "thr_x",
+        changes: ["terminals-changed"],
+        metadata: { projectId: "proj_2" },
+      });
+      await vi.advanceTimersByTimeAsync(300);
+      expect(counts(sdk)).toEqual(before);
+    });
+
+    it("LIST-30: status-changed with statusChange updates the thread without a request; title-changed fetches it", async () => {
+      const w = twoEnvs();
+      const { sdk, store, emitThreadChanged } = open(w, ALL);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(store.getView().rows[0]?.stale).toBe(true);
+      const before = counts(sdk);
+      emitThreadChanged({
+        id: "thr_1",
+        changes: ["status-changed"],
+        metadata: { statusChange: { status: "active", latestAttentionAt: 5_000 } },
+      });
+      expect(store.getView().rows[0]?.stale).toBe(false);
+      await vi.advanceTimersByTimeAsync(300);
+      expect(counts(sdk)).toEqual(before);
+
+      const record = w.threads[0];
+      if (!record) throw new Error("fixture");
+      record.title = "Renamed";
+      emitThreadChanged({ id: "thr_1", changes: ["title-changed"] });
+      await vi.advanceTimersByTimeAsync(300);
+      expect(sdk.threads.get).toHaveBeenCalledWith({ threadId: "thr_1" });
+      expect(sdk.terminals.list.mock.calls.length).toBe(before.lists);
+      expect(store.getView().rows[0]?.thread?.title).toBe("Renamed");
+    });
+
+    it("LIST-30: environment-changed moves the thread's rows to its new environment", async () => {
+      const w = twoEnvs();
+      const { store, emitThreadChanged } = open(w, ALL);
+      await vi.advanceTimersByTimeAsync(0);
+      const section = (id: string) =>
+        store
+          .getView()
+          .sections.find((s) => s.environment.id === id)
+          ?.grouped.threads.flatMap((g) => g.rows.map((r) => r.terminal.id));
+      expect(section("env_a")).toEqual(["t1"]);
+      const record = w.threads[0];
+      const session = w.terminals[0];
+      if (!record || !session) throw new Error("fixture");
+      record.environmentId = "env_b";
+      session.environmentId = "env_b";
+      emitThreadChanged({ id: "thr_1", changes: ["environment-changed"] });
+      await vi.advanceTimersByTimeAsync(300);
+      expect(section("env_a")).toEqual([]);
+      expect(section("env_b")).toEqual(["t1"]);
+    });
+
+    it("LIST-30, LIST-11: thread-deleted treats its terminals as gone without fetching the thread", async () => {
+      const w = twoEnvs();
+      w.terminals.push(terminal({ id: "t_gone", threadId: "thr_1" }));
+      const { sdk, store, ids, emitThreadChanged } = open(w, ALL);
+      await vi.advanceTimersByTimeAsync(0);
+      const exited = w.terminals[0];
+      if (!exited) throw new Error("fixture");
+      exited.status = "exited";
+      exited.exitCode = 0;
+      w.terminals = w.terminals.filter((t) => t.id !== "t_gone");
+      w.threads = [];
+      sdk.threads.get.mockClear();
+      emitThreadChanged({ id: "thr_1", changes: ["thread-deleted"] });
+      await vi.advanceTimersByTimeAsync(300);
+      expect(sdk.threads.get).not.toHaveBeenCalled();
+      expect(ids()).toEqual(["t1"]);
+      expect(store.getView().rows[0]?.terminal.status).toBe("exited");
+      expect(store.getView().rows[0]?.thread?.title).toBe("One");
+    });
+
+    it("LIST-30: one request per thread; a signal during it runs it once more afterwards", async () => {
+      const w = twoEnvs();
+      const { sdk, ids, emitThreadChanged } = open(w, ALL);
+      await vi.advanceTimersByTimeAsync(0);
+      const real = sdk.terminals.list.getMockImplementation();
+      const gates: (() => void)[] = [];
+      sdk.terminals.list.mockImplementation(async (args) => {
+        if (args.scope.kind === "thread") await new Promise<void>((resolve) => gates.push(resolve));
+        return real?.(args) as never;
+      });
+      emitThreadChanged({ id: "thr_1", changes: ["terminals-changed"] });
+      await vi.advanceTimersByTimeAsync(300);
+      expect(gates).toHaveLength(1);
+      w.terminals.push(terminal({ id: "t2", threadId: "thr_1" }));
+      emitThreadChanged({ id: "thr_1", changes: ["terminals-changed"] });
+      emitThreadChanged({ id: "thr_1", changes: ["terminals-changed"] });
+      await vi.advanceTimersByTimeAsync(300);
+      expect(gates).toHaveLength(1);
+      gates.shift()?.();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(gates).toHaveLength(1);
+      gates.shift()?.();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(gates).toHaveLength(0);
+      expect(ids()).toEqual(["t1", "t2"]);
+    });
+
+    it("LIST-30: a stream of signals still refreshes within a second", async () => {
+      const w = twoEnvs();
+      const { sdk, emitThreadChanged } = open(w, ALL);
+      await vi.advanceTimersByTimeAsync(0);
+      sdk.terminals.list.mockClear();
+      for (let i = 0; i < 6; i++) {
+        emitThreadChanged({ id: "thr_1", changes: ["terminals-changed"] });
+        await vi.advanceTimersByTimeAsync(200);
+      }
+      expect(listCalls(sdk, "thread").length).toBeGreaterThan(0);
+    });
+
+    it("LIST-31, LIST-28: away, signals fetch nothing; on return the marked threads come after the selection and before the scan", async () => {
+      const w = twoEnvs();
+      const { sdk, store, detach, emitThreadChanged } = open(w, ALL);
+      await vi.advanceTimersByTimeAsync(0);
+      detach();
+      await vi.advanceTimersByTimeAsync(0);
+      const before = counts(sdk);
+      w.terminals.push(terminal({ id: "t2", threadId: "thr_1" }));
+      emitThreadChanged({ id: "thr_1", changes: ["terminals-changed"] });
+      emitThreadChanged({ id: "thr_1", changes: ["title-changed"] });
+      await vi.advanceTimersByTimeAsync(SCAN_REFRESH_MS * 2);
+      expect(counts(sdk)).toEqual(before);
+
+      sdk.terminals.list.mockClear();
+      sdk.terminals.get.mockClear();
+      sdk.threads.list.mockClear();
+      detachers.push(store.attach(ALL, "t1"));
+      await vi.advanceTimersByTimeAsync(0);
+      const order = (fn: { mock: { invocationCallOrder: number[] } }, i = 0) =>
+        fn.mock.invocationCallOrder[i] ?? -1;
+      const marked = sdk.terminals.list.mock.calls.findIndex(
+        ([args]) => args.scope.kind === "thread",
+      );
+      expect(order(sdk.terminals.get)).toBeLessThan(order(sdk.terminals.list, marked));
+      expect(order(sdk.terminals.list, marked)).toBeLessThan(order(sdk.threads.list));
+      expect(sdk.threads.get).toHaveBeenCalledWith({ threadId: "thr_1" });
+      expect(store.getView().rows.map((r) => r.terminal.id)).toEqual(["t1", "t2"]);
+    });
+
+    it("LIST-27, LIST-28: while the connection is down the rows are last known; when it comes back, the list is confirmed again", async () => {
+      const w = twoEnvs();
+      const { sdk, store, emitConnection } = open(w, ALL);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(store.getView().freshness).toBe("live");
+      emitConnection({ state: "disconnected", reconnected: false });
+      expect(store.getView().lastKnown).toBe(true);
+      expect(store.getView().freshness).toBe("reconnecting");
+      expect(store.getView().complete).toBe(false);
+
+      const scans = sdk.threads.list.mock.calls.length;
+      emitConnection({ state: "connected", reconnected: true });
+      expect(store.getView().freshness).toBe("updating");
+      await vi.advanceTimersByTimeAsync(0);
+      expect(sdk.threads.list.mock.calls.length).toBeGreaterThan(scans);
+      expect(store.getView().freshness).toBe("live");
+      expect(store.getView().complete).toBe(true);
+    });
+
+    it("LIST-27: the page's view of the connection counts too", async () => {
+      const { store } = open(twoEnvs(), ALL);
+      await vi.advanceTimersByTimeAsync(0);
+      store.setConnection("reconnecting");
+      expect(store.getView().freshness).toBe("reconnecting");
+      store.setConnection("connected");
+      await vi.advanceTimersByTimeAsync(0);
+      expect(store.getView().freshness).toBe("live");
+    });
+
+    it("LIST-14: an environment created elsewhere is listed at once, with its own terminals", async () => {
+      const w = twoEnvs();
+      const { store, emitEnvironmentChanged } = open(w, ALL);
+      await vi.advanceTimersByTimeAsync(0);
+      w.environments.push({
+        id: "env_c",
+        projectId: "proj_1",
+        name: "new-wt",
+        branchName: null,
+        path: "/Users/me/new",
+        hostId: "host_1",
+        status: "ready",
+      });
+      w.terminals.push(terminal({ id: "c1", environmentId: "env_c" }));
+      emitEnvironmentChanged({ id: "env_c", changes: ["metadata-changed"] });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(store.getView().environments?.map((e) => e.id)).not.toContain("env_c");
+      emitEnvironmentChanged({ id: "env_c", changes: ["environment-created"] });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(store.getView().environments?.map((e) => e.id)).toContain("env_c");
+      expect(store.getView().rows.map((r) => r.terminal.id)).toContain("c1");
+    });
+
+    it("LIST-8: a single environment lists its own terminals every 5 s, its threads only on signals and every 2 minutes", async () => {
+      const w = twoEnvs();
+      const { sdk, ids, emitThreadChanged } = open(w, "env_a");
+      await vi.advanceTimersByTimeAsync(0);
+      sdk.terminals.list.mockClear();
+      sdk.threads.list.mockClear();
+      await vi.advanceTimersByTimeAsync(FAST_REFRESH_MS * 3);
+      expect(listCalls(sdk, "environment")).toHaveLength(3);
+      expect(listCalls(sdk, "thread")).toHaveLength(0);
+      expect(sdk.threads.list).not.toHaveBeenCalled();
+
+      w.terminals.push(terminal({ id: "t2", threadId: "thr_1" }));
+      emitThreadChanged({ id: "thr_1", changes: ["terminals-changed"] });
+      await vi.advanceTimersByTimeAsync(300);
+      expect(ids()).toContain("t2");
+      expect(sdk.threads.list).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(SCAN_REFRESH_MS);
+      expect(sdk.threads.list).toHaveBeenCalled();
+    });
+
+    it("LIST-17: a failed listing is tried again on the next 5-second tick", async () => {
+      const bb = fakeSdk(world());
+      bb.sdk.threads.list.mockRejectedValueOnce(new Error("bb is restarting"));
+      const store = new HubStore(bb.sdk, "proj_1");
+      detachers.push(store.attach(ALL, null));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(store.getView().complete).toBe(false);
+      await vi.advanceTimersByTimeAsync(FAST_REFRESH_MS);
+      expect(store.getView().complete).toBe(true);
+    });
+
+    it("LIST-28, LIST-30: a listing still in flight from before a return does not stand in for the return's own", async () => {
+      const w = twoEnvs();
+      const { sdk, store, detach } = open(w, "env_a");
+      await vi.advanceTimersByTimeAsync(0);
+      // The next listing of env_a never answers.
+      const real = sdk.threads.list.getMockImplementation();
+      sdk.threads.list.mockImplementationOnce(() => new Promise(() => {}));
+      await vi.advanceTimersByTimeAsync(SCAN_REFRESH_MS);
+      detach();
+      await vi.advanceTimersByTimeAsync(0);
+      sdk.threads.list.mockImplementation(real as never);
+      detachers.push(store.attach("env_a", null));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(store.getView().lastKnown).toBe(false);
+      expect(store.getView().complete).toBe(true);
+    });
+
+    it("LIST-27, LIST-30: a listing in flight when the connection comes back does not confirm the list", async () => {
+      const w = twoEnvs();
+      const { sdk, store, emitConnection } = open(w, "env_a");
+      await vi.advanceTimersByTimeAsync(0);
+      const real = sdk.threads.list.getMockImplementation();
+      let release: () => void = () => {};
+      sdk.threads.list.mockImplementationOnce(async (args) => {
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        return real?.(args) as never;
+      });
+      await vi.advanceTimersByTimeAsync(SCAN_REFRESH_MS);
+      emitConnection({ state: "disconnected", reconnected: false });
+      emitConnection({ state: "connected", reconnected: true });
+      await vi.advanceTimersByTimeAsync(0);
+      // The reconnect listed again on its own, without waiting for the old one.
+      expect(store.getView().lastKnown).toBe(false);
+      release();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(store.getView().lastKnown).toBe(false);
+    });
+
+    it("LIST-30: a status signal does not throw away a fetch of the thread already under way", async () => {
+      const w = twoEnvs();
+      const { sdk, store, emitThreadChanged } = open(w, ALL);
+      await vi.advanceTimersByTimeAsync(0);
+      const real = sdk.threads.get.getMockImplementation();
+      let release: () => void = () => {};
+      sdk.threads.get.mockImplementationOnce(async (args) => {
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        return real?.(args) as never;
+      });
+      const record = w.threads[0];
+      if (!record) throw new Error("fixture");
+      record.title = "Renamed";
+      emitThreadChanged({ id: "thr_1", changes: ["title-changed"] });
+      await vi.advanceTimersByTimeAsync(300);
+      record.status = "active";
+      emitThreadChanged({
+        id: "thr_1",
+        changes: ["status-changed"],
+        metadata: { statusChange: { status: "active", latestAttentionAt: 5_000 } },
+      });
+      release();
+      await vi.advanceTimersByTimeAsync(300);
+      const row = store.getView().rows[0];
+      expect(row?.thread?.title).toBe("Renamed");
+      expect(row?.stale).toBe(false);
+    });
+
+    it("LIST-30: a status signal during a fetch of only the thread's terminals still needs no request", async () => {
+      const w = twoEnvs();
+      const { sdk, store, emitThreadChanged } = open(w, ALL);
+      await vi.advanceTimersByTimeAsync(0);
+      const real = sdk.terminals.list.getMockImplementation();
+      let release: () => void = () => {};
+      sdk.terminals.list.mockImplementationOnce(async (args) => {
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        return real?.(args) as never;
+      });
+      emitThreadChanged({ id: "thr_1", changes: ["terminals-changed"] });
+      await vi.advanceTimersByTimeAsync(300);
+      emitThreadChanged({
+        id: "thr_1",
+        changes: ["status-changed"],
+        metadata: { statusChange: { status: "active", latestAttentionAt: 5_000 } },
+      });
+      expect(store.getView().rows[0]?.stale).toBe(false);
+      release();
+      await vi.advanceTimersByTimeAsync(300);
+      expect(sdk.threads.get).not.toHaveBeenCalled();
+    });
+
+    it("LIST-30: an environment's own terminals are listed one request at a time", async () => {
+      const w = twoEnvs();
+      const { sdk, store } = open(w, ALL);
+      await vi.advanceTimersByTimeAsync(0);
+      const real = sdk.terminals.list.getMockImplementation();
+      let release: () => void = () => {};
+      const held = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      sdk.terminals.list.mockImplementation(async (args) => {
+        if (args.scope.kind === "environment") await held;
+        return real?.(args) as never;
+      });
+      sdk.terminals.list.mockClear();
+      const all = store.refreshEnvironmentScopes();
+      const one = store.refreshEnvironmentScopes(["env_a"]);
+      expect(listCalls(sdk, "environment")).toHaveLength(2);
+      release();
+      await expect(Promise.all([all, one])).resolves.toEqual([true, true]);
+    });
+
+    it("LIST-14: an environment created while the list is being fetched gets its terminals listed after the re-run", async () => {
+      const w = twoEnvs();
+      const { sdk, store, emitEnvironmentChanged } = open(w, ALL);
+      await vi.advanceTimersByTimeAsync(0);
+      const real = sdk.environments.list.getMockImplementation();
+      let release: () => void = () => {};
+      sdk.environments.list.mockImplementationOnce(async (args) => {
+        const answer = await real?.(args);
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        return answer as never;
+      });
+      await vi.advanceTimersByTimeAsync(SCAN_REFRESH_MS);
+      w.environments.push({
+        id: "env_c",
+        projectId: "proj_1",
+        name: "new-wt",
+        branchName: null,
+        path: "/Users/me/new",
+        hostId: "host_1",
+        status: "ready",
+      });
+      w.terminals.push(terminal({ id: "c1", environmentId: "env_c" }));
+      emitEnvironmentChanged({ id: "env_c", changes: ["environment-created"] });
+      release();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(store.getView().rows.map((r) => r.terminal.id)).toContain("c1");
+    });
   });
 });
