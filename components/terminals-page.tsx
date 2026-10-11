@@ -6,7 +6,15 @@ import {
   useBbNavigate,
   useSdk,
 } from "@get-bb/plugin-sdk/app";
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import {
+  type RefObject,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { toast } from "sonner";
 import { ConfirmDialog, RenameDialog } from "@/components/dialogs";
 import { EmptyPane } from "@/components/empty-pane";
@@ -37,9 +45,15 @@ import {
   visibleOrder,
 } from "@/lib/all-view";
 import { isNotFound } from "@/lib/errors";
-import { type HubSdk, HubStore, type Section, setActiveHubStore } from "@/lib/hub-store";
+import { type HubSdk, type HubView, hubStoreFor, projectsFor, type Section } from "@/lib/hub-store";
 import type { HubRow, TerminalSession } from "@/lib/inventory";
 import { isFilterShortcut } from "@/lib/keyboard";
+import {
+  applyScrollAnchor,
+  type PageMemory,
+  pageMemoryFor,
+  readScrollAnchor,
+} from "@/lib/page-memory";
 import { ALL, formatRoute, PANEL_PATH, parseRoute, type Route } from "@/lib/route";
 import { cn } from "@/lib/utils";
 
@@ -58,6 +72,85 @@ type Missing =
   | { kind: "gone"; terminalId: string; exitCode: number | null }
   | { kind: "unreachable"; terminalId: string; message: string };
 
+/** What the page shows before the route names a project. */
+const NO_VIEW: HubView = {
+  projectId: "",
+  environment: ALL,
+  environments: null,
+  environmentsListed: false,
+  sections: [],
+  rows: [],
+  running: 0,
+  hints: new Map(),
+  homes: new Map(),
+  error: null,
+  complete: false,
+  lastKnown: false,
+  freshness: "live",
+  scan: null,
+  vanished: new Set(),
+};
+const noView = () => NO_VIEW;
+const noSubscription = () => () => {};
+
+/**
+ * LIST-29: remembers the list's scroll position per project by the row at
+ * its top, and puts that row back where it was when the page opens again.
+ */
+function useRememberedScroll(
+  scroller: RefObject<HTMLDivElement | null>,
+  memory: PageMemory,
+  projectId: string | null,
+  rowIds: readonly string[],
+) {
+  // Restoring until the anchor is placed or cannot be; scroll events are not
+  // recorded meanwhile, so the page's own first layout cannot overwrite it.
+  const restore = useRef<{ projectId: string | null; done: boolean }>({
+    projectId: null,
+    done: true,
+  });
+  if (restore.current.projectId !== projectId) {
+    restore.current = { projectId, done: projectId === null };
+  }
+  useLayoutEffect(() => {
+    const element = scroller.current;
+    const state = restore.current;
+    if (!element || state.done || state.projectId === null) return;
+    const anchor = memory.project(state.projectId).scroll;
+    if (anchor !== null && applyScrollAnchor(element, anchor)) {
+      state.done = true;
+      return;
+    }
+    // Nothing remembered, or the anchor is not rendered. Wait for rows; once
+    // the list has rows, the anchor is gone, filtered out, or collapsed. Either
+    // way the list starts at the top, never where another project left it.
+    if (anchor === null || rowIds.length > 0) {
+      element.scrollTop = 0;
+      state.done = true;
+    }
+  });
+  useEffect(() => {
+    const element = scroller.current;
+    if (!element || projectId === null) return;
+    let frame = 0;
+    const record = () => {
+      frame = 0;
+      if (restore.current.done) memory.project(projectId).scroll = readScrollAnchor(element);
+    };
+    const onScroll = () => {
+      if (frame === 0) frame = window.requestAnimationFrame(record);
+    };
+    element.addEventListener("scroll", onScroll);
+    return () => {
+      element.removeEventListener("scroll", onScroll);
+      if (frame !== 0) {
+        window.cancelAnimationFrame(frame);
+        if (element.isConnected) record();
+      }
+    };
+  }, [scroller, memory, projectId]);
+}
+
 function useNow(intervalMs: number): number {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
@@ -71,16 +164,30 @@ export function TerminalsPage({ subPath }: PluginNavPanelProps) {
   const sdk: HubSdk = useSdk();
   const context = useBbContext();
   const navigate = useBbNavigate();
-  const store = useMemo(() => new HubStore(sdk), [sdk]);
-  const view = useSyncExternalStore(store.subscribe, store.getView);
   const route = parseRoute(subPath);
+  const memory = pageMemoryFor(sdk);
+  const projectList = projectsFor(sdk);
+  const { projects } = useSyncExternalStore(projectList.subscribe, projectList.get);
+  // The store for the route's project, taken as the page renders, so one
+  // project's rows never show under another's (ADR 202610111227).
+  const store = route.projectId ? hubStoreFor(sdk, route.projectId) : null;
+  const view = useSyncExternalStore(
+    store?.subscribe ?? noSubscription,
+    store ? () => store.viewFor(route.environment) : noView,
+  );
   const now = useNow(30_000);
 
   useEffect(() => {
-    setActiveHubStore(store);
-    store.start();
-    return () => store.dispose();
-  }, [store]);
+    void projectList.load();
+  }, [projectList]);
+
+  // LIST-27: attaching starts the refreshes, and on a return checks the
+  // selection first (LIST-28); the route's later changes go through select.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: attach reads the route once; the effect below follows it.
+  useEffect(() => store?.attach(route.environment, route.terminalId), [store]);
+  useEffect(() => {
+    store?.select(route.environment, route.terminalId);
+  }, [store, route.environment, route.terminalId]);
 
   const go = useCallback(
     (next: Route, replace: boolean) => {
@@ -89,18 +196,34 @@ export function TerminalsPage({ subPath }: PluginNavPanelProps) {
     [navigate],
   );
 
-  // NAV-4, NAV-7: fill in a missing project or environment, replacing the entry.
-  const fallbackProject = context.projectId ?? view.projects?.[0]?.id ?? null;
+  // NAV-4, NAV-7, NAV-10: fill in a missing project or environment, replacing
+  // the entry. Only the root route restores the project's remembered place.
+  const fallbackProject = context.projectId ?? projects?.[0]?.id ?? null;
   useEffect(() => {
-    const projectId = route.projectId ?? fallbackProject;
-    if (projectId === null) return;
-    const canonical = formatRoute({ ...route, projectId });
-    if (canonical !== subPath) go({ ...route, projectId }, true);
-  }, [route, fallbackProject, subPath, go]);
+    if (route.projectId === null) {
+      if (fallbackProject === null) return;
+      const remembered = memory.project(fallbackProject).route;
+      go(
+        {
+          projectId: fallbackProject,
+          environment: remembered?.environment ?? ALL,
+          terminalId: remembered?.terminalId ?? null,
+        },
+        true,
+      );
+      return;
+    }
+    if (formatRoute(route) !== subPath) go(route, true);
+  }, [route, fallbackProject, subPath, go, memory]);
 
+  // NAV-10: remember where the user is in each project.
   useEffect(() => {
-    store.select(route.projectId, route.environment);
-  }, [store, route.projectId, route.environment]);
+    if (route.projectId === null) return;
+    memory.project(route.projectId).route = {
+      environment: route.environment,
+      terminalId: route.terminalId,
+    };
+  }, [memory, route.projectId, route.environment, route.terminalId]);
 
   // Created or restarted here: the view answers its startup queries.
   const fresh = useRef(new Set<string>());
@@ -124,9 +247,16 @@ export function TerminalsPage({ subPath }: PluginNavPanelProps) {
   // (not found, or exited) counts as gone; a failed request keeps the link.
   // biome-ignore lint/correctness/useExhaustiveDependencies: lookupNonce re-runs a retry.
   useEffect(() => {
-    if (!selectedId || selectedRow || !listed || lookups.has(selectedId)) return;
+    if (!selectedId || selectedRow || !store) return;
     // Closed or dismissed here: the action moves the selection itself (ACT-7).
-    if (store.removedHere(selectedId) || seen.current.ids.has(selectedId)) return;
+    if (store.removedHere(selectedId)) return;
+    // LIST-28: a listed terminal bb no longer has, found on return or later.
+    if (view.vanished.has(selectedId)) {
+      setMissing({ kind: "gone", terminalId: selectedId, exitCode: null });
+      go({ ...route, terminalId: null }, true);
+      return;
+    }
+    if (!listed || lookups.has(selectedId) || seen.current.ids.has(selectedId)) return;
     let cancelled = false;
     sdk.terminals.get({ terminalId: selectedId }).then(
       (session) => {
@@ -151,7 +281,7 @@ export function TerminalsPage({ subPath }: PluginNavPanelProps) {
     return () => {
       cancelled = true;
     };
-  }, [selectedId, selectedRow, listed, lookups, sdk, store, lookupNonce]);
+  }, [selectedId, selectedRow, listed, lookups, sdk, store, view.vanished, lookupNonce]);
 
   useEffect(() => {
     if (missing?.kind === "unreachable" && missing.terminalId !== selectedId) setMissing(null);
@@ -175,22 +305,50 @@ export function TerminalsPage({ subPath }: PluginNavPanelProps) {
   const [busy, setBusy] = useState(false);
   const [creating, setCreating] = useState<string | null>(null);
 
-  // LIST-13: section state lasts for this visit to the page only.
-  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set());
+  // LIST-13: collapsed sections, remembered per project. A root route (no
+  // project yet) is not a project switch.
+  const [collapsedState, setCollapsedState] = useState(() => ({
+    projectId: route.projectId,
+    set: route.projectId ? memory.project(route.projectId).collapsed : new Set<string>(),
+  }));
+  if (route.projectId !== null && collapsedState.projectId !== route.projectId) {
+    setCollapsedState({
+      projectId: route.projectId,
+      set: memory.project(route.projectId).collapsed,
+    });
+  }
+  const collapsed = collapsedState.set;
   const all = route.environment === ALL;
   // The selected environment: the route's, or in All the selected terminal's.
   const selectedEnvironment = all
     ? (environmentOf(view.sections, selectedId) ?? selectedSession?.environmentId ?? null)
     : route.environment;
-  // LIST-21: the filter lasts while the page is open, until the project changes.
-  const [filter, setFilter] = useState("");
-  const [filterProject, setFilterProject] = useState(route.projectId);
-  if (filterProject !== route.projectId) {
-    setFilterProject(route.projectId);
-    setFilter("");
+  // LIST-21: the filter is kept across leaving and returning to the same
+  // project, and cleared when the project changes. A root route (no project
+  // yet) is not a change: the project it lands on brings its filter back.
+  const [filterState, setFilterState] = useState(() => ({
+    projectId: route.projectId,
+    text: route.projectId ? memory.filterFor(route.projectId) : "",
+  }));
+  if (route.projectId !== null && filterState.projectId !== route.projectId) {
+    setFilterState({
+      projectId: route.projectId,
+      text: filterState.projectId === null ? memory.filterFor(route.projectId) : "",
+    });
   }
+  const filter = filterState.text;
+  useEffect(() => {
+    if (route.projectId !== null && memory.filter && memory.filter.projectId !== route.projectId) {
+      memory.filter = null;
+    }
+  }, [memory, route.projectId]);
+  const setFilter = (text: string) => {
+    setFilterState((current) => ({ ...current, text }));
+    if (route.projectId !== null) memory.filter = { projectId: route.projectId, text };
+  };
   const filterRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
+  const scrollerRef = useRef<HTMLDivElement>(null);
   const words = filterWords(filter);
   const filtering = words.length > 0;
   const filterContext = { words, hints: view.hints, homes: view.homes };
@@ -211,8 +369,10 @@ export function TerminalsPage({ subPath }: PluginNavPanelProps) {
     : all
       ? visibleOrder(shown, collapsed, selectedId)
       : view.rows.map((row) => row.terminal.id);
+  useRememberedScroll(scrollerRef, memory, route.projectId, order);
 
   const doClose = async (row: HubRow) => {
+    if (!store) return;
     setBusy(true);
     try {
       await store.close(row.terminal.id);
@@ -235,7 +395,7 @@ export function TerminalsPage({ subPath }: PluginNavPanelProps) {
       try {
         const session = await restartTerminal(sdk, row.terminal.id);
         fresh.current.add(session.id);
-        store.replace(row.terminal.id, session);
+        store?.replace(row.terminal.id, session);
         if (row.terminal.id === selectedId || session.id !== row.terminal.id) {
           select(session.id, row.terminal.id === selectedId);
         }
@@ -246,7 +406,7 @@ export function TerminalsPage({ subPath }: PluginNavPanelProps) {
     // ACT-4: thread terminals ask first; environment terminals are the hub's.
     onClose: (row) => (row.terminal.threadId !== null ? setClosing(row) : void doClose(row)),
     onDismiss: (row) => {
-      store.dismiss(row.terminal.id);
+      store?.dismiss(row.terminal.id);
       if (row.terminal.id === selectedId) select(nextSelection(order, row.terminal.id), true);
     },
   };
@@ -262,7 +422,7 @@ export function TerminalsPage({ subPath }: PluginNavPanelProps) {
         start: { mode: "shell" },
       });
       fresh.current.add(session.id);
-      store.upsert(session);
+      store?.upsert(session);
       setMissing(null);
       go({ ...route, environment: all ? ALL : environmentId, terminalId: session.id }, false);
     } catch (error) {
@@ -272,7 +432,31 @@ export function TerminalsPage({ subPath }: PluginNavPanelProps) {
     }
   };
 
-  const settled = settledTargets(view.rows);
+  // ACT-5: refresh first, so the confirmation lists what is stale now. The
+  // scope it was opened for must still be the page's when the refresh ends.
+  const [checkingStale, setCheckingStale] = useState(false);
+  const scope = useRef({ store, environment: route.environment });
+  scope.current = { store, environment: route.environment };
+  const openCleanup = async () => {
+    const opened = scope.current;
+    if (!opened.store) return;
+    setCheckingStale(true);
+    let ok = false;
+    try {
+      ok = await opened.store.refresh(opened.environment);
+    } finally {
+      setCheckingStale(false);
+    }
+    const now = scope.current;
+    if (now.store !== opened.store || now.environment !== opened.environment) return;
+    if (!ok) {
+      toast.error("Could not check for stale terminals. Try again in a moment.");
+      return;
+    }
+    const targets = settledTargets(opened.store.viewFor(opened.environment).rows);
+    if (targets.length === 0) toast.success("Nothing to clean up: no stale terminals now.");
+    else setBulk(targets);
+  };
   // VIEW-9, ACT-8: the bar acts on the listed row, or on a linked terminal
   // the list does not hold (NAV-5), whose owner the list does not know.
   const barRow: HubRow | null =
@@ -283,7 +467,7 @@ export function TerminalsPage({ subPath }: PluginNavPanelProps) {
     : null;
 
   const runBulk = async () => {
-    if (!bulk) return;
+    if (!bulk || !store) return;
     setBusy(true);
     try {
       const result = await store.closeAll(bulk);
@@ -300,6 +484,13 @@ export function TerminalsPage({ subPath }: PluginNavPanelProps) {
       } else {
         toast.success(
           `Closed ${result.closed.length} terminal${result.closed.length === 1 ? "" : "s"}`,
+        );
+      }
+      if (result.skipped.length > 0) {
+        toast(
+          `Left ${result.skipped.length} open that ${result.skipped.length === 1 ? "is" : "are"} no longer stale: ${result.skipped
+            .map((row) => row.terminal.title || row.terminal.id)
+            .join(", ")}`,
         );
       }
     } finally {
@@ -347,7 +538,7 @@ export function TerminalsPage({ subPath }: PluginNavPanelProps) {
                 <SelectValue placeholder="Project" />
               </SelectTrigger>
               <SelectContent>
-                {(view.projects ?? []).map((project) => (
+                {(projects ?? []).map((project) => (
                   <SelectItem key={project.id} value={project.id}>
                     {project.name}
                   </SelectItem>
@@ -390,11 +581,13 @@ export function TerminalsPage({ subPath }: PluginNavPanelProps) {
           <div className="pt-1.5">
             <SummaryLine
               summary={summarize(view.rows, view.hints)}
-              onStale={() => setBulk(settled)}
+              freshness={view.freshness}
+              checking={checkingStale}
+              onStale={() => void openCleanup()}
             />
           </div>
         </div>
-        <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-4 pt-1">
+        <div ref={scrollerRef} className="min-h-0 flex-1 overflow-y-auto px-2 pb-4 pt-1">
           {missing?.kind === "gone" ? (
             <div
               role="status"
@@ -430,13 +623,12 @@ export function TerminalsPage({ subPath }: PluginNavPanelProps) {
             listRef={listRef}
             focusFilter={() => filterRef.current?.focus()}
             collapsed={collapsed}
-            onToggleSection={(environmentId) =>
-              setCollapsed((current) => {
-                const next = new Set(current);
-                if (!next.delete(environmentId)) next.add(environmentId);
-                return next;
-              })
-            }
+            onToggleSection={(environmentId) => {
+              const next = new Set(collapsed);
+              if (!next.delete(environmentId)) next.add(environmentId);
+              if (route.projectId !== null) memory.project(route.projectId).collapsed = next;
+              setCollapsedState({ projectId: route.projectId, set: next });
+            }}
             onSelectEnvironment={(environment) =>
               go({ ...route, environment, terminalId: null }, true)
             }
@@ -461,7 +653,8 @@ export function TerminalsPage({ subPath }: PluginNavPanelProps) {
                 cols={selectedSession.cols}
                 rows={selectedSession.rows}
                 fresh={fresh.current.has(selectedId)}
-                onOutput={(id, bytes) => store.pushOutput(id, bytes)}
+                onOutput={(id, bytes) => store?.pushOutput(id, bytes)}
+                onExit={(id, status, exitCode) => store?.noteEnded(id, status, exitCode)}
               />
             </div>
           </>
@@ -517,7 +710,7 @@ export function TerminalsPage({ subPath }: PluginNavPanelProps) {
           if (!row) return;
           try {
             const session = await renameTerminal(sdk, row.terminal.id, title);
-            store.upsert(session);
+            store?.upsert(session);
             // A linked terminal the list does not hold (NAV-5) shows from here.
             setLookups((current) =>
               current.has(session.id) ? new Map(current).set(session.id, session) : current,

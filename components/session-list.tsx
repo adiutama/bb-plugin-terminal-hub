@@ -183,9 +183,12 @@ function AllSection({ section, props }: { section: Section; props: ListProps }) 
   );
 }
 
-/** LIST-17: what the first scan has got to, until the list is complete. */
+/**
+ * LIST-17: what the first scan has got to, until the list is complete. After
+ * a return, the last known rows stand in for it (LIST-27).
+ */
 function ScanStatus({ view }: { view: HubView }) {
-  if (view.complete) return null;
+  if (view.complete || (view.lastKnown && view.rows.length > 0)) return null;
   let text: string | null = null;
   if (view.scan) {
     text =
@@ -231,7 +234,7 @@ function FilterResults({ props }: { props: ListProps }) {
 function ListBody({ props }: { props: ListProps }) {
   const { view } = props;
   if (view.environment === "all") {
-    if (view.environments !== null && view.environments.length === 0) {
+    if (view.environmentsListed && view.environments?.length === 0) {
       return (
         <p className="px-2 py-3 text-sm text-muted-foreground">This project has no environments.</p>
       );
@@ -249,7 +252,7 @@ function ListBody({ props }: { props: ListProps }) {
   if (view.sections.length === 0) {
     return (
       <p className="px-2 py-3 text-sm text-muted-foreground">
-        {view.environments === null ? "Loading environments…" : "This project has no environments."}
+        {view.environmentsListed ? "This project has no environments." : "Loading environments…"}
       </p>
     );
   }

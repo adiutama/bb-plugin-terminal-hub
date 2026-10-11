@@ -42,6 +42,13 @@ N stale** at the end of that line closes them, after asking.
   and **↑** to move through the rows, **Enter** to open one, and **Esc** to
   clear the filter. The filter is not kept in the URL, so a reload starts
   with the full list.
+- Leave the page, to open a thread for example, and come back: the list is
+  there at once, scrolled where it was, with the same sections collapsed and
+  the same filter, and the rail brings you back to the terminal you had open.
+  Until it has checked again, the summary line and the title bar say **Last
+  known**, and nothing claims a terminal is missing. A terminal that exited
+  meanwhile keeps its row with the exit code until you dismiss it. A reload
+  starts fresh.
 
 - **Environment** lists the environment's own terminals: the ones you start
   here with **New terminal**, and the ones agents start for long-running
@@ -65,6 +72,8 @@ N stale** at the end of that line closes them, after asking.
 - Each row's **⋯** menu can **Rename**, **Restart shell**, or **Close** it; it
   and the row's **×** show when you point at the row, focus it, or select it,
   and always on touch screens. Closing a thread's terminal asks first.
+  **Clean up N stale** checks the list again before it asks, and once more
+  before closing each terminal, so nothing that came back to life is closed.
 - The URL names the project, environment, and terminal, so reloads, links, and
   back/forward return to the same shell.
 

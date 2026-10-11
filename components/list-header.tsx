@@ -12,7 +12,7 @@ import {
 import { Icon } from "@/components/ui/icon";
 import { Input } from "@/components/ui/input";
 import { menuEnvironments, type Summary } from "@/lib/all-view";
-import type { EnvironmentInfo } from "@/lib/hub-store";
+import type { EnvironmentInfo, Freshness } from "@/lib/hub-store";
 import { navItems } from "@/lib/keyboard";
 import { cn } from "@/lib/utils";
 
@@ -105,9 +105,21 @@ function plural(count: number, word: string): string {
 
 /**
  * LIST-16: "N running · N servers", then "Clean up N stale", which opens
- * ACT-5's confirmation.
+ * ACT-5's confirmation. LIST-27: last known rows say so, and offer no cleanup.
  */
-export function SummaryLine({ summary, onStale }: { summary: Summary; onStale: () => void }) {
+export function SummaryLine({
+  summary,
+  freshness,
+  checking = false,
+  onStale,
+}: {
+  summary: Summary;
+  freshness: Freshness;
+  /** ACT-5: the list is being refreshed before the confirmation opens. */
+  checking?: boolean;
+  onStale: () => void;
+}) {
+  const lastKnown = freshness !== "live";
   return (
     <section
       aria-label="Summary"
@@ -117,10 +129,16 @@ export function SummaryLine({ summary, onStale }: { summary: Summary; onStale: (
         aria-hidden="true"
         className={cn(
           "size-1.5 shrink-0 rounded-full",
-          summary.running > 0 ? "bg-emerald-500" : "bg-muted-foreground/50",
+          summary.running > 0 && !lastKnown ? "bg-emerald-500" : "bg-muted-foreground/50",
         )}
       />
-      <span className={summary.running > 0 ? "text-foreground/80" : undefined}>
+      {lastKnown ? (
+        <>
+          <span>Last known</span>
+          <span aria-hidden="true">·</span>
+        </>
+      ) : null}
+      <span className={summary.running > 0 && !lastKnown ? "text-foreground/80" : undefined}>
         {summary.running} running
       </span>
       {summary.servers > 0 ? (
@@ -129,15 +147,21 @@ export function SummaryLine({ summary, onStale }: { summary: Summary; onStale: (
           <span>{plural(summary.servers, "server")}</span>
         </>
       ) : null}
-      {summary.stale > 0 ? (
+      {lastKnown ? (
+        <>
+          <span aria-hidden="true">·</span>
+          <span role="status">{freshness === "reconnecting" ? "Reconnecting…" : "Updating…"}</span>
+        </>
+      ) : summary.stale > 0 ? (
         <button
           type="button"
-          className="ml-auto flex shrink-0 items-center gap-1 rounded px-1 py-0.5 text-amber-700 transition-colors duration-150 hover:bg-amber-500/10 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring motion-reduce:transition-none dark:text-amber-400 pointer-coarse:min-h-8"
+          className="ml-auto flex shrink-0 items-center gap-1 rounded px-1 py-0.5 text-amber-700 transition-colors duration-150 hover:bg-amber-500/10 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-60 motion-reduce:transition-none dark:text-amber-400 pointer-coarse:min-h-8"
           title="Close all terminals from settled threads"
+          disabled={checking}
           onClick={onStale}
         >
           <Icon name="Brush" fallback="Trash2" className="size-3" aria-hidden="true" />
-          Clean up {summary.stale} stale
+          {checking ? "Checking…" : `Clean up ${summary.stale} stale`}
         </button>
       ) : null}
     </section>
