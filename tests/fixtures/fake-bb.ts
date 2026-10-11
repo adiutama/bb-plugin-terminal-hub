@@ -92,7 +92,10 @@ export function notFound(): Error {
 
 /** A fake `useSdk()` / `bb.sdk` over `w`. Every method is a vi.fn. */
 export function fakeSdk(w: World) {
-  const listeners = new Set<(event: any) => void>();
+  const listeners = new Map<string, Set<(event: any) => void>>();
+  const emit = (event: string, payload: unknown) => {
+    for (const listener of listeners.get(event) ?? []) listener(payload);
+  };
   let created = 0;
   // Output per terminal, numbered like bb's ring buffer. `w.output` seeds it.
   const streams = new Map<string, { seq: number; text: string }[]>();
@@ -237,10 +240,15 @@ export function fakeSdk(w: World) {
         return { directory: home, parent: null, entries: [] };
       }),
     },
-    subscribe: vi.fn((args: { event: "thread:changed"; callback: (event: any) => void }) => {
-      listeners.add(args.callback);
+    subscribe: vi.fn((args: { event: string; callback: (event: any) => void }) => {
+      let set = listeners.get(args.event);
+      if (!set) {
+        set = new Set();
+        listeners.set(args.event, set);
+      }
+      set.add(args.callback);
       return () => {
-        listeners.delete(args.callback);
+        set.delete(args.callback);
       };
     }),
   };
@@ -252,8 +260,26 @@ export function fakeSdk(w: World) {
       chunks.push({ seq: (chunks.at(-1)?.seq ?? 0) + 1, text });
     },
     /** Fires bb's `thread:changed` realtime event. */
-    emitThreadChanged(event: { id: string; changes: string[]; metadata?: { projectId?: string } }) {
-      for (const listener of listeners) listener({ entity: "thread", ...event });
+    emitThreadChanged(event: {
+      id: string;
+      changes: string[];
+      metadata?: {
+        projectId?: string;
+        statusChange?: { status: string; latestAttentionAt: number };
+      };
+    }) {
+      emit("thread:changed", { entity: "thread", ...event });
+    },
+    /** Fires bb's `environment:changed` realtime event. */
+    emitEnvironmentChanged(event: { id: string; changes: string[] }) {
+      emit("environment:changed", { entity: "environment", ...event });
+    },
+    /** Fires bb's `realtime:connection` event. */
+    emitConnection(event: {
+      state: "connected" | "connecting" | "disconnected";
+      reconnected: boolean;
+    }) {
+      emit("realtime:connection", { reconnectDelayMs: null, ...event });
     },
   };
 }

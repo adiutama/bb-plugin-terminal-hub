@@ -1476,4 +1476,14 @@ describe("returning to the page", () => {
     expect(page.titleBar()).not.toHaveTextContent("2 running");
     expect(await within(page.titleBar()).findByText("1 running")).toBeInTheDocument();
   });
+
+  it("LIST-27: while bb's realtime connection is down, the summary says Reconnecting…", async () => {
+    const page = await mountPage(world({ terminals: [terminal({ id: "t1" })] }), "proj_1/env_a");
+    await waitFor(() => expect(summary()).toHaveTextContent(/^1 running$/));
+    await page.slot.setRealtimeConnectionState("reconnecting");
+    expect(summary()).toHaveTextContent("Last known·1 running·Reconnecting…");
+    expect(page.titleBar()).toHaveTextContent("Last known · 1 running");
+    await page.slot.setRealtimeConnectionState("connected");
+    await waitFor(() => expect(summary()).toHaveTextContent(/^1 running$/));
+  });
 });
