@@ -22,17 +22,19 @@ bb builds the page on install. A **Terminals** entry appears in the rail.
 
 Open **Terminals** from the rail. Pick a project, then an environment (a
 checkout or worktree), or keep **All environments** to see the whole project
-at once. The title bar shows how many terminals are running, and a line above
-the list sums up what is running, how many are serving a local address, and
-how many are stale (click it to clean them up).
+at once; both pickers sit on one line at the top, `project / environment`.
+The title bar shows how many terminals are running, and a line above the list
+sums up what is running and how many are serving a local address. When
+terminals were left running by threads that are no longer active, **Clean up
+N stale** at the end of that line closes them, after asking.
 
 - **All environments** shows a section only for environments that have
-  terminals, running or just exited. The empty ones wait behind **Show N empty
-  environments** at the bottom. Until the first scan of the project's threads
-  finishes, the list shows its progress.
+  terminals, running or just exited. Reach an empty one through the
+  environment picker, **New terminal**'s **▾** menu, or the filter. Until the
+  first scan of the project's threads finishes, the list shows its progress.
 - **New terminal** starts a shell in the selected environment (in All, the
-  selected terminal's). Its **▾** menu starts one in any environment of the
-  project, including the empty ones.
+  selected terminal's), and says which one ("in main"). Its **▾** menu starts
+  one in any environment of the project, including the empty ones.
 - The **filter** above the list narrows it to terminals whose title,
   environment, thread, directory, or server address contains every word you
   type, so `3000` finds the dev server. Empty environments whose name matches
@@ -46,18 +48,23 @@ how many are stale (click it to clean them up).
   processes. They are shared by every thread and outlive any one of them.
 - **From threads** lists terminals started from a thread's sidebar or by an
   agent, with the thread's title and state. A terminal still running after its
-  thread went idle, errored, or was archived is highlighted, with how long ago
-  that happened.
-- Each row shows whether the terminal is running (or its exit code), its title,
-  its starting directory, and a local server address such as `:3000` when one
-  appears in its output.
+  thread went idle, errored, or was archived gets an amber dot and a warning
+  saying how long ago that happened. The two headings show only when an
+  environment has both kinds.
+- Each row starts with a status dot (green running, amber stale, a ring once
+  exited, red if it failed), then its title, a local server address such as
+  `:3000` when one appears in its output, the exit code once exited, and its
+  starting directory.
 - Select a row to see the terminal live, rendered with Ghostty's engine. Click
   into it to type; only the view you are typing in resizes the shell, so the
   same terminal open in a thread's sidebar keeps its size until then.
   **Cmd/Ctrl+F** searches its scrollback.
-- Each row's **⋯** menu can **Rename**, **Restart shell**, or **Close** it.
-  Closing a thread's terminal asks first. **Close all from settled threads**
-  cleans up every terminal left behind by threads that are no longer active.
+- The bar above the terminal shows its title and environment, a link that
+  opens its server address in a new tab, **Restart shell**, and a **⋯** menu
+  to **Rename** or **Close** it.
+- Each row's **⋯** menu can **Rename**, **Restart shell**, or **Close** it; it
+  and the row's **×** show when you point at the row, focus it, or select it,
+  and always on touch screens. Closing a thread's terminal asks first.
 - The URL names the project, environment, and terminal, so reloads, links, and
   back/forward return to the same shell.
 

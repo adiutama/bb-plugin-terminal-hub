@@ -1,6 +1,6 @@
 // The left column's list: one environment's groups, or every environment's.
 import type { ReactNode, Ref } from "react";
-import { type RowActions, SessionRow } from "@/components/session-row";
+import { ACTION_BUTTON_CLASS, type RowActions, SessionRow } from "@/components/session-row";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
 import type { HubView, Section } from "@/lib/hub-store";
@@ -14,10 +14,9 @@ export interface ListProps {
   now: number;
   actions: RowActions;
   /**
-   * LIST-13: the All view's sections, and the environments hidden as empty.
-   * With a filter (LIST-18, LIST-19), the sections cut to their matching rows
-   * (in a single environment, its one section), and the empty environments
-   * whose name matches.
+   * LIST-13: the All view's sections. With a filter (LIST-18, LIST-19), the
+   * sections cut to their matching rows (in a single environment, its one
+   * section), and in `empty` the empty environments whose name matches.
    */
   shown: readonly Section[];
   empty: readonly Section[];
@@ -27,17 +26,26 @@ export interface ListProps {
   /** LIST-23: ↑ from the first item, or a filtered empty environment opened. */
   focusFilter: () => void;
   collapsed: ReadonlySet<string>;
-  showEmpty: boolean;
   onToggleSection: (environmentId: string) => void;
-  onToggleEmpty: () => void;
   onSelectEnvironment: (environmentId: string) => void;
 }
 
-function Group({ label, children }: { label: string; children: ReactNode }) {
+const MUTED_HEADING = "px-2 pt-1.5 text-[11px] tracking-wide text-muted-foreground/80";
+
+/** LIST-2: the heading shows only when the environment shows both kinds. */
+function Group({
+  label,
+  heading,
+  children,
+}: {
+  label: string;
+  heading: boolean;
+  children: ReactNode;
+}) {
   return (
-    <section aria-label={label} className="flex flex-col gap-0.5">
-      <h3 className="px-2 pt-2 text-xs font-medium text-muted-foreground">{label}</h3>
-      <ul className="flex flex-col gap-0.5">{children}</ul>
+    <section aria-label={label} className="flex flex-col gap-px">
+      {heading ? <h3 className={MUTED_HEADING}>{label}</h3> : null}
+      <ul className="flex flex-col gap-px">{children}</ul>
     </section>
   );
 }
@@ -61,6 +69,7 @@ function Rows({ rows, props }: { rows: HubRow[]; props: ListProps }) {
 function EnvironmentGroups({ section, props }: { section: Section; props: ListProps }) {
   const { grouped } = section;
   const empty = grouped.environment.length === 0 && grouped.threads.length === 0;
+  const both = grouped.environment.length > 0 && grouped.threads.length > 0;
   return (
     <div className="flex flex-col gap-1">
       {section.error ? (
@@ -78,12 +87,12 @@ function EnvironmentGroups({ section, props }: { section: Section; props: ListPr
         )
       ) : null}
       {grouped.environment.length > 0 ? (
-        <Group label="Environment">
+        <Group label="Environment" heading={both}>
           <Rows rows={grouped.environment} props={props} />
         </Group>
       ) : null}
       {grouped.threads.length > 0 ? (
-        <Group label="From threads">
+        <Group label="From threads" heading={both}>
           <Rows rows={grouped.threads.flatMap((group) => group.rows)} props={props} />
         </Group>
       ) : null}
@@ -95,7 +104,8 @@ function noMatch(filter: string): string {
   return `No terminals match “${filter}”.`;
 }
 
-function SectionHeader({
+/** LIST-15: the environment's name, monospace with a branch icon; selects it. */
+function EnvironmentName({
   section,
   props,
   navItem = false,
@@ -108,7 +118,7 @@ function SectionHeader({
   return (
     <button
       type="button"
-      className="flex min-w-0 flex-1 items-center gap-2 py-1.5 pr-2 text-left text-sm font-medium"
+      className="flex min-w-0 shrink items-center gap-1.5 rounded px-1 py-1 text-left font-mono pointer-coarse:min-h-8 text-xs font-medium text-foreground/80 underline-offset-[3px] hover:text-foreground hover:underline hover:decoration-muted-foreground/50 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
       title={section.environment.path}
       data-nav-item={navItem ? "" : undefined}
       onClick={() => {
@@ -117,55 +127,58 @@ function SectionHeader({
         if (navItem) props.focusFilter();
       }}
     >
+      <Icon name="GitBranch" className="size-3 shrink-0 text-muted-foreground" aria-hidden="true" />
       <span className="truncate">{section.environment.name}</span>
-      <span
-        className={cn(
-          "ml-auto shrink-0 text-xs tabular-nums",
-          section.running > 0 ? "text-foreground" : "text-muted-foreground",
-        )}
-      >
-        {section.running} running
-      </span>
     </button>
   );
 }
 
 /**
  * LIST-13, LIST-15: one collapsible section per environment with something to
- * show. While filtering (LIST-19) it is open, without its toggle.
+ * show: its name, a hairline, its running count, and the toggle on the right.
+ * While filtering (LIST-19) it is open, without its toggle.
  */
 function AllSection({ section, props }: { section: Section; props: ListProps }) {
   const filtering = props.filter !== "";
   const open = filtering || !props.collapsed.has(section.environment.id);
   const name = section.environment.name;
   return (
-    <section aria-label={name} className="flex flex-col">
-      <div className="flex items-center gap-1 rounded-md hover:bg-state-hover">
+    <section aria-label={name} className="mt-2 flex flex-col first:mt-0">
+      <div className="flex min-h-7 items-center gap-2 pl-1 pr-1">
+        <EnvironmentName section={section} props={props} />
+        <span aria-hidden="true" className="h-px min-w-3 flex-1 bg-border" />
+        <span
+          className={cn(
+            "shrink-0 text-xs tabular-nums",
+            section.running > 0 ? "text-foreground/80" : "text-muted-foreground",
+          )}
+        >
+          {section.running}
+          <span className="sr-only"> running</span>
+        </span>
         {filtering ? (
-          <span className="size-7 shrink-0" aria-hidden="true" />
+          <span className={cn(ACTION_BUTTON_CLASS, "pointer-events-none")} aria-hidden="true" />
         ) : (
           <Button
             variant="ghost"
             size="icon"
-            className="size-7 shrink-0 text-muted-foreground"
+            className={ACTION_BUTTON_CLASS}
             aria-expanded={open}
             aria-label={open ? `Collapse ${name}` : `Expand ${name}`}
             onClick={() => props.onToggleSection(section.environment.id)}
           >
             <Icon
-              name={open ? "ChevronDown" : "ChevronRight"}
-              className="size-4"
+              name="ChevronDown"
+              className={cn(
+                "transition-transform duration-150 motion-reduce:transition-none",
+                !open && "-rotate-90",
+              )}
               aria-hidden="true"
             />
           </Button>
         )}
-        <SectionHeader section={section} props={props} />
       </div>
-      {open ? (
-        <div className="pl-4">
-          <EnvironmentGroups section={section} props={props} />
-        </div>
-      ) : null}
+      {open ? <EnvironmentGroups section={section} props={props} /> : null}
     </section>
   );
 }
@@ -189,40 +202,6 @@ function ScanStatus({ view }: { view: HubView }) {
   ) : null;
 }
 
-/** LIST-13: the empty environments, behind one disclosure. */
-function EmptyEnvironments({ props }: { props: ListProps }) {
-  const { empty, showEmpty } = props;
-  return (
-    <div className="flex flex-col">
-      <Button
-        variant="ghost"
-        size="sm"
-        className="justify-start gap-1 px-1 text-muted-foreground"
-        aria-expanded={showEmpty}
-        onClick={props.onToggleEmpty}
-      >
-        <Icon
-          name={showEmpty ? "ChevronDown" : "ChevronRight"}
-          className="size-4"
-          aria-hidden="true"
-        />
-        {showEmpty
-          ? "Hide empty environments"
-          : `Show ${empty.length} empty environment${empty.length === 1 ? "" : "s"}`}
-      </Button>
-      {showEmpty ? (
-        <section aria-label="Empty environments" className="flex flex-col pl-7">
-          {empty.map((section) => (
-            <div key={section.environment.id} className="flex rounded-md hover:bg-state-hover">
-              <SectionHeader section={section} props={props} />
-            </div>
-          ))}
-        </section>
-      ) : null}
-    </div>
-  );
-}
-
 /** LIST-19, LIST-20: what the filter found besides rows, in the All view. */
 function FilterResults({ props }: { props: ListProps }) {
   const { view, shown, empty, filter } = props;
@@ -234,14 +213,12 @@ function FilterResults({ props }: { props: ListProps }) {
     <>
       {rows ? null : <p className="px-2 py-3 text-sm text-muted-foreground">{noMatch(filter)}</p>}
       {empty.length > 0 ? (
-        <section aria-label="Empty environments" className="flex flex-col">
-          <h3 className="px-2 pt-2 text-xs font-medium text-muted-foreground">
-            Empty environments
-          </h3>
-          <div className="flex flex-col pl-7">
+        <section aria-label="Empty environments" className="mt-2 flex flex-col">
+          <h3 className={MUTED_HEADING}>Empty environments</h3>
+          <div className="flex flex-col pl-1">
             {empty.map((section) => (
-              <div key={section.environment.id} className="flex rounded-md hover:bg-state-hover">
-                <SectionHeader section={section} props={props} navItem />
+              <div key={section.environment.id} className="flex">
+                <EnvironmentName section={section} props={props} navItem />
               </div>
             ))}
           </div>
@@ -265,11 +242,7 @@ function ListBody({ props }: { props: ListProps }) {
         {props.shown.map((section) => (
           <AllSection key={section.environment.id} section={section} props={props} />
         ))}
-        {props.filter !== "" ? (
-          <FilterResults props={props} />
-        ) : view.complete && props.empty.length > 0 ? (
-          <EmptyEnvironments props={props} />
-        ) : null}
+        {props.filter !== "" ? <FilterResults props={props} /> : null}
       </>
     );
   }
@@ -289,7 +262,7 @@ export function SessionList(props: ListProps) {
     // biome-ignore lint/a11y/noStaticElementInteractions: LIST-23 arrows move between the buttons inside; the handler only acts on keys from them.
     <div
       ref={props.listRef}
-      className="flex flex-col gap-1"
+      className="flex flex-col gap-0.5"
       onKeyDown={(event) => moveInList(event, event.currentTarget, props.focusFilter)}
     >
       <ListBody props={props} />

@@ -9,9 +9,11 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { toast } from "sonner";
 import { ConfirmDialog, RenameDialog } from "@/components/dialogs";
+import { EmptyPane } from "@/components/empty-pane";
 import { FilterBox, NewTerminalButton, SummaryLine } from "@/components/list-header";
 import { SessionList } from "@/components/session-list";
 import type { RowActions } from "@/components/session-row";
+import { TerminalBar } from "@/components/terminal-bar";
 import { TerminalView } from "@/components/terminal-view";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
@@ -39,6 +41,11 @@ import { type HubSdk, HubStore, type Section, setActiveHubStore } from "@/lib/hu
 import type { HubRow, TerminalSession } from "@/lib/inventory";
 import { isFilterShortcut } from "@/lib/keyboard";
 import { ALL, formatRoute, PANEL_PATH, parseRoute, type Route } from "@/lib/route";
+import { cn } from "@/lib/utils";
+
+/** LIST-26: the project and environment pickers, as borderless triggers. */
+const SCOPE_TRIGGER =
+  "h-7 w-auto min-w-0 shrink justify-start gap-1 rounded-md border-0 px-1.5 text-[13.5px] hover:bg-state-hover focus:ring-1 pointer-coarse:h-9 [&>span]:truncate [&_[data-icon-root]]:size-3.5 [&_[data-icon-root]]:text-muted-foreground";
 
 /** A new hub terminal's size until the view fits it to the page. */
 const NEW_TERMINAL_SIZE = { cols: 120, rows: 32 };
@@ -170,7 +177,6 @@ export function TerminalsPage({ subPath }: PluginNavPanelProps) {
 
   // LIST-13: section state lasts for this visit to the page only.
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set());
-  const [showEmpty, setShowEmpty] = useState(false);
   const all = route.environment === ALL;
   // The selected environment: the route's, or in All the selected terminal's.
   const selectedEnvironment = all
@@ -190,17 +196,14 @@ export function TerminalsPage({ subPath }: PluginNavPanelProps) {
   const filterContext = { words, hints: view.hints, homes: view.homes };
 
   let shown: Section[];
-  let empty: Section[];
+  let empty: Section[] = [];
   if (!filtering) {
-    ({ shown, empty } = all
-      ? splitSections(view.sections, selectedEnvironment)
-      : { shown: view.sections, empty: [] });
+    shown = all ? splitSections(view.sections, selectedEnvironment).shown : view.sections;
   } else if (all) {
     // LIST-19: matching sections and failed ones; matching empty environments.
     ({ shown, emptyMatches: empty } = filterAll(view.sections, filterContext, view.complete));
   } else {
     shown = view.sections.map((section) => filterSection(section, filterContext));
-    empty = [];
   }
   // ACT-7: the next selection follows what the list shows.
   const order = filtering
@@ -270,6 +273,14 @@ export function TerminalsPage({ subPath }: PluginNavPanelProps) {
   };
 
   const settled = settledTargets(view.rows);
+  // VIEW-9, ACT-8: the bar acts on the listed row, or on a linked terminal
+  // the list does not hold (NAV-5), whose owner the list does not know.
+  const barRow: HubRow | null =
+    selectedRow ??
+    (selectedSession ? { terminal: selectedSession, thread: null, stale: false } : null);
+  const barEnvironment = selectedSession
+    ? (view.environments?.find((env) => env.id === selectedSession.environmentId)?.name ?? null)
+    : null;
 
   const runBulk = async () => {
     if (!bulk) return;
@@ -316,55 +327,74 @@ export function TerminalsPage({ subPath }: PluginNavPanelProps) {
         filterRef.current?.select();
       }}
     >
-      <aside className="flex w-80 shrink-0 flex-col border-r border-border">
-        <div className="flex flex-col gap-2 border-b border-border p-2">
-          <Select
-            value={route.projectId ?? ""}
-            onValueChange={(projectId) =>
-              go({ projectId, environment: ALL, terminalId: null }, true)
-            }
-          >
-            <SelectTrigger aria-label="Project">
-              <SelectValue placeholder="Project" />
-            </SelectTrigger>
-            <SelectContent>
-              {(view.projects ?? []).map((project) => (
-                <SelectItem key={project.id} value={project.id}>
-                  {project.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <Select
-            value={route.environment}
-            onValueChange={(environment) => go({ ...route, environment, terminalId: null }, true)}
-          >
-            <SelectTrigger aria-label="Environment">
-              <SelectValue placeholder="Environment" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value={ALL}>All environments</SelectItem>
-              <SelectSeparator />
-              {environmentOptions.map((env) => (
-                <SelectItem key={env.id} value={env.id}>
-                  {env.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+      <aside
+        aria-label="Terminal list"
+        className="flex w-80 shrink-0 flex-col border-r border-border"
+      >
+        <div className="flex flex-col gap-0.5 px-2.5 pb-1.5 pt-2.5">
+          {/* LIST-26: project / environment, as borderless triggers on one line. */}
+          <div className="flex min-w-0 items-center gap-0.5 pb-1.5">
+            <Select
+              value={route.projectId ?? ""}
+              onValueChange={(projectId) =>
+                go({ projectId, environment: ALL, terminalId: null }, true)
+              }
+            >
+              <SelectTrigger
+                aria-label="Project"
+                className={cn(SCOPE_TRIGGER, "shrink-[3] font-semibold")}
+              >
+                <SelectValue placeholder="Project" />
+              </SelectTrigger>
+              <SelectContent>
+                {(view.projects ?? []).map((project) => (
+                  <SelectItem key={project.id} value={project.id}>
+                    {project.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <span aria-hidden="true" className="shrink-0 text-muted-foreground/60">
+              /
+            </span>
+            <Select
+              value={route.environment}
+              onValueChange={(environment) => go({ ...route, environment, terminalId: null }, true)}
+            >
+              <SelectTrigger
+                aria-label="Environment"
+                className={cn(SCOPE_TRIGGER, "font-medium text-foreground/80")}
+              >
+                <SelectValue placeholder="Environment" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={ALL}>All environments</SelectItem>
+                <SelectSeparator />
+                {environmentOptions.map((env) => (
+                  <SelectItem key={env.id} value={env.id}>
+                    {env.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
           <NewTerminalButton
             environments={environmentOptions}
             targetId={selectedEnvironment}
             creating={creating}
             onCreate={(environmentId) => void newTerminal(environmentId)}
           />
-          <FilterBox value={filter} onChange={setFilter} inputRef={filterRef} listRef={listRef} />
-          <SummaryLine
-            summary={summarize(view.rows, view.hints)}
-            onStale={() => setBulk(settled)}
-          />
+          <div className="mt-1">
+            <FilterBox value={filter} onChange={setFilter} inputRef={filterRef} listRef={listRef} />
+          </div>
+          <div className="pt-1.5">
+            <SummaryLine
+              summary={summarize(view.rows, view.hints)}
+              onStale={() => setBulk(settled)}
+            />
+          </div>
         </div>
-        <div className="min-h-0 flex-1 overflow-y-auto p-1">
+        <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-4 pt-1">
           {missing?.kind === "gone" ? (
             <div
               role="status"
@@ -400,7 +430,6 @@ export function TerminalsPage({ subPath }: PluginNavPanelProps) {
             listRef={listRef}
             focusFilter={() => filterRef.current?.focus()}
             collapsed={collapsed}
-            showEmpty={showEmpty}
             onToggleSection={(environmentId) =>
               setCollapsed((current) => {
                 const next = new Set(current);
@@ -408,31 +437,34 @@ export function TerminalsPage({ subPath }: PluginNavPanelProps) {
                 return next;
               })
             }
-            onToggleEmpty={() => setShowEmpty((current) => !current)}
             onSelectEnvironment={(environment) =>
               go({ ...route, environment, terminalId: null }, true)
             }
           />
         </div>
-        {settled.length > 0 ? (
-          <div className="border-t border-border p-2">
-            <Button variant="outline" size="sm" className="w-full" onClick={() => setBulk(settled)}>
-              Close all from settled threads ({settled.length})
-            </Button>
-          </div>
-        ) : null}
       </aside>
-      <main className="flex min-w-0 flex-1 flex-col">
-        {selectedSession && selectedId ? (
-          <TerminalView
-            key={selectedId}
-            sdk={sdk}
-            terminalId={selectedId}
-            cols={selectedSession.cols}
-            rows={selectedSession.rows}
-            fresh={fresh.current.has(selectedId)}
-            onOutput={(id, bytes) => store.pushOutput(id, bytes)}
-          />
+      <main className="flex min-w-0 flex-1 flex-col bg-background">
+        {selectedSession && selectedId && barRow ? (
+          <>
+            <TerminalBar
+              row={barRow}
+              environmentName={barEnvironment}
+              hint={view.hints.get(selectedId)}
+              actions={actions}
+            />
+            {/* VIEW-10: the inset lies outside the element the view measures. */}
+            <div data-terminal-inset="" className="flex min-h-0 min-w-0 flex-1 px-4 py-3.5">
+              <TerminalView
+                key={selectedId}
+                sdk={sdk}
+                terminalId={selectedId}
+                cols={selectedSession.cols}
+                rows={selectedSession.rows}
+                fresh={fresh.current.has(selectedId)}
+                onOutput={(id, bytes) => store.pushOutput(id, bytes)}
+              />
+            </div>
+          </>
         ) : missing?.kind === "unreachable" ? (
           <div className="m-auto flex max-w-sm flex-col items-center gap-3 text-center text-sm">
             <p role="alert" className="text-destructive">
@@ -450,15 +482,29 @@ export function TerminalsPage({ subPath }: PluginNavPanelProps) {
             </Button>
           </div>
         ) : (
-          <div className="m-auto max-w-sm text-center text-sm text-muted-foreground">
-            {view.rows.length > 0
-              ? "Select a terminal to see it here."
-              : view.complete
-                ? "No terminals found. Start one with New terminal in…"
-                : view.error
-                  ? "Could not list every terminal yet; trying again shortly."
-                  : "Looking for terminals…"}
-          </div>
+          // LIST-25: the sentence for the state, and a way to start a shell.
+          <EmptyPane
+            message={
+              view.rows.length > 0
+                ? "Select a terminal to see it here."
+                : view.complete
+                  ? "No terminals found. Start one with New terminal in…"
+                  : view.error
+                    ? "Could not list every terminal yet; trying again shortly."
+                    : "Looking for terminals…"
+            }
+            action={
+              (view.rows.length > 0 || view.complete) && environmentOptions.length > 0 ? (
+                <NewTerminalButton
+                  appearance="solid"
+                  environments={environmentOptions}
+                  targetId={selectedEnvironment}
+                  creating={creating}
+                  onCreate={(environmentId) => void newTerminal(environmentId)}
+                />
+              ) : null
+            }
+          />
         )}
       </main>
       <RenameDialog
@@ -470,7 +516,12 @@ export function TerminalsPage({ subPath }: PluginNavPanelProps) {
           setRenaming(null);
           if (!row) return;
           try {
-            store.upsert(await renameTerminal(sdk, row.terminal.id, title));
+            const session = await renameTerminal(sdk, row.terminal.id, title);
+            store.upsert(session);
+            // A linked terminal the list does not hold (NAV-5) shows from here.
+            setLookups((current) =>
+              current.has(session.id) ? new Map(current).set(session.id, session) : current,
+            );
           } catch (error) {
             toast.error(`Could not rename: ${message(error)}`);
           }

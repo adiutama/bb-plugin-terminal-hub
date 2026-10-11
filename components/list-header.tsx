@@ -14,48 +14,71 @@ import { Input } from "@/components/ui/input";
 import { menuEnvironments, type Summary } from "@/lib/all-view";
 import type { EnvironmentInfo } from "@/lib/hub-store";
 import { navItems } from "@/lib/keyboard";
+import { cn } from "@/lib/utils";
 
 /**
  * LIST-9: the main part starts a shell in `targetId`, or opens the menu when
- * there is none; ▾ opens "New terminal in…" with the target first.
+ * there is none; ▾ opens "New terminal in…" with the target first. The list
+ * header shows it as a quiet row naming the target; the empty main pane
+ * (LIST-25) as a solid button.
  */
 export function NewTerminalButton({
   environments,
   targetId,
   creating,
   onCreate,
+  appearance = "row",
 }: {
   environments: readonly EnvironmentInfo[];
   targetId: string | null;
   creating: string | null;
   onCreate: (environmentId: string) => void;
+  appearance?: "row" | "solid";
 }) {
   const [open, setOpen] = useState(false);
   const { first, rest } = menuEnvironments(environments, targetId);
+  const busy = creating !== null;
   const item = (env: EnvironmentInfo) => (
     <DropdownMenuItem key={env.id} title={env.path} onSelect={() => onCreate(env.id)}>
       <span className="truncate">{env.name}</span>
     </DropdownMenuItem>
   );
+  const row = appearance === "row";
   return (
-    <div className="flex">
+    <div className={cn("flex", row ? "rounded-lg" : "rounded-lg bg-foreground text-background")}>
       <Button
-        variant="outline"
-        size="sm"
-        className="min-w-0 flex-1 justify-start rounded-r-none"
-        disabled={creating !== null}
+        variant={row ? "ghost" : "default"}
+        className={cn(
+          "min-w-0 justify-start gap-2.5 rounded-r-none",
+          row
+            ? "h-8 flex-1 rounded-l-lg px-2 text-[13.5px] pointer-coarse:h-9"
+            : "h-8 rounded-l-lg px-3 text-[13px] font-semibold pointer-coarse:h-9",
+        )}
+        disabled={busy || environments.length === 0}
         onClick={() => (targetId === null ? setOpen(true) : onCreate(targetId))}
       >
         <Icon name="Plus" className="size-4" aria-hidden="true" />
-        {creating !== null ? "Starting…" : "New terminal"}
+        {busy ? "Starting…" : "New terminal"}
+        {first && !busy ? (
+          <span
+            className={cn(
+              "min-w-0 truncate font-mono text-[11.5px] font-normal",
+              row ? "ml-auto text-muted-foreground" : "text-background/70",
+            )}
+          >
+            in {first.name}
+          </span>
+        ) : null}
       </Button>
       <DropdownMenu open={open} onOpenChange={setOpen}>
         <DropdownMenuTrigger asChild>
           <Button
-            variant="outline"
-            size="sm"
-            className="rounded-l-none border-l-0 px-2"
-            disabled={creating !== null || environments.length === 0}
+            variant={row ? "ghost" : "default"}
+            className={cn(
+              "h-8 w-8 rounded-l-none rounded-r-lg px-0 pointer-coarse:h-9 pointer-coarse:w-9",
+              row ? "text-muted-foreground" : "border-l border-background/20",
+            )}
+            disabled={busy || environments.length === 0}
             aria-label="New terminal in…"
           >
             <Icon name="ChevronDown" className="size-4" aria-hidden="true" />
@@ -80,14 +103,24 @@ function plural(count: number, word: string): string {
   return `${count} ${word}${count === 1 ? "" : "s"}`;
 }
 
-/** LIST-16: "N running · N servers · N stale"; stale opens ACT-5's confirmation. */
+/**
+ * LIST-16: "N running · N servers", then "Clean up N stale", which opens
+ * ACT-5's confirmation.
+ */
 export function SummaryLine({ summary, onStale }: { summary: Summary; onStale: () => void }) {
   return (
     <section
       aria-label="Summary"
-      className="flex flex-wrap items-center gap-x-1.5 px-1 text-xs text-muted-foreground"
+      className="flex min-h-6 items-center gap-1.5 px-1 text-xs tabular-nums text-muted-foreground"
     >
-      <span className={summary.running > 0 ? "text-foreground" : undefined}>
+      <span
+        aria-hidden="true"
+        className={cn(
+          "size-1.5 shrink-0 rounded-full",
+          summary.running > 0 ? "bg-emerald-500" : "bg-muted-foreground/50",
+        )}
+      />
+      <span className={summary.running > 0 ? "text-foreground/80" : undefined}>
         {summary.running} running
       </span>
       {summary.servers > 0 ? (
@@ -97,17 +130,15 @@ export function SummaryLine({ summary, onStale }: { summary: Summary; onStale: (
         </>
       ) : null}
       {summary.stale > 0 ? (
-        <>
-          <span aria-hidden="true">·</span>
-          <button
-            type="button"
-            className="text-amber-700 underline-offset-2 hover:underline dark:text-amber-400"
-            title="Close all from settled threads"
-            onClick={onStale}
-          >
-            {summary.stale} stale
-          </button>
-        </>
+        <button
+          type="button"
+          className="ml-auto flex shrink-0 items-center gap-1 rounded px-1 py-0.5 text-amber-700 transition-colors duration-150 hover:bg-amber-500/10 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring motion-reduce:transition-none dark:text-amber-400 pointer-coarse:min-h-8"
+          title="Close all terminals from settled threads"
+          onClick={onStale}
+        >
+          <Icon name="Brush" fallback="Trash2" className="size-3" aria-hidden="true" />
+          Clean up {summary.stale} stale
+        </button>
       ) : null}
     </section>
   );
@@ -144,7 +175,7 @@ export function FilterBox({
         spellCheck={false}
         autoCapitalize="off"
         autoCorrect="off"
-        className="h-8 pl-7 pr-7 text-sm"
+        className="h-8 rounded-lg border-transparent bg-foreground/[0.04] pl-7 pr-7 text-[13px] hover:border-border focus-visible:border-border pointer-coarse:h-9 pointer-coarse:pr-10"
         onChange={(event) => onChange(event.target.value)}
         onKeyDown={(event) => {
           if (event.nativeEvent.isComposing) return;
@@ -172,7 +203,7 @@ export function FilterBox({
         <button
           type="button"
           aria-label="Clear filter"
-          className="absolute right-2 text-muted-foreground hover:text-foreground"
+          className="absolute right-1 grid size-6 place-items-center rounded text-muted-foreground hover:text-foreground pointer-coarse:size-8"
           onClick={() => {
             onChange("");
             inputRef.current?.focus();
@@ -182,7 +213,7 @@ export function FilterBox({
         </button>
       ) : (
         <span aria-hidden="true" className="pointer-events-none absolute right-2">
-          <kbd className="rounded border border-border px-1 font-mono text-[10px] text-muted-foreground">
+          <kbd className="rounded border border-border px-1 font-mono text-[10.5px] text-muted-foreground">
             /
           </kbd>
         </span>

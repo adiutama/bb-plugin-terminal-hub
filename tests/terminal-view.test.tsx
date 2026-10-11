@@ -268,6 +268,22 @@ describe("terminal view", () => {
     expect(container.querySelectorAll(".term-row:not(.term-scrollback-row)")).toHaveLength(20);
   });
 
+  it("VIEW-10: the element the view measures carries no padding, so the page's inset stays outside it", async () => {
+    const { sdk } = shell("ready\r\n");
+    showView(sdk);
+    const renderer = await waitFor(() => {
+      const element = document.querySelector<HTMLElement>("[data-renderer=ghostty]");
+      expect(element).not.toBeNull();
+      return element as HTMLElement;
+    });
+    const root = renderer.closest<HTMLElement>(".th-terminal");
+    for (const element of [root, renderer]) {
+      expect(element?.className).not.toMatch(/(^|\s)p[xytrbl]?-/);
+    }
+    const styles = await readFile("styles.css", "utf8");
+    expect(styles).toMatch(/\.th-terminal \.wterm \{[^}]*padding: 0;/);
+  });
+
   it("VIEW-5: keyboard input reaches the shell and stays away from bb's shortcuts", async () => {
     const { sdk } = shell("ready\r\n");
     showView(sdk);
