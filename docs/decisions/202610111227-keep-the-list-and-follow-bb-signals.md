@@ -1,9 +1,9 @@
 # Keep the list for the session, remember the user's place, and follow bb's signals
 
-- Status: accepted
+- Status: superseded
 - Date: 2026-10-11
 - Supersedes: 202610110324
-- Superseded by: none
+- Superseded by: 202610111439
 - Applies to: docs/specs/session-list.md, docs/specs/navigation.md, docs/specs/actions.md, docs/specs/terminal-view.md, lib/hub-store.ts, lib/actions.ts, lib/all-view.ts, lib/page-memory.ts, components/terminals-page.tsx, components/session-list.tsx, components/list-header.tsx, components/header-count.tsx, components/terminal-view.tsx, docs/architecture.md, README.md
 
 ## Context
