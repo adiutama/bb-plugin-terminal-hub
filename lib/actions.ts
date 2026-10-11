@@ -133,6 +133,14 @@ export async function restartTerminal(
   return sdk.terminals.restart({ terminalId });
 }
 
+/** LIST-32: how soon after the user typed into the view an exit counts as theirs. */
+export const ENDED_HERE_MS = 5_000;
+
+/** LIST-32: the user ended this terminal from its view. */
+export function endedHere(typedAgoMs: number | null): boolean {
+  return typedAgoMs !== null && typedAgoMs <= ENDED_HERE_MS;
+}
+
 /** ACT-7: the terminal after the closed one, in display order, or none. */
 export function nextSelection(order: readonly string[], closedId: string): string | null {
   const index = order.indexOf(closedId);

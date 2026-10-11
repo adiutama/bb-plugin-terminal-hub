@@ -1199,11 +1199,9 @@ export class HubStore {
     return this.gone.has(terminalId);
   }
 
-  /** LIST-11: the user dismissed an exited row. */
+  /** LIST-11: the user dismissed an exited row; LIST-32: or ended it from the view. */
   dismiss(terminalId: string): void {
-    this.gone.add(terminalId);
-    this.retained.delete(terminalId);
-    this.emit();
+    this.forget(terminalId);
   }
 
   /** ACT-6. A verified close counts as dismissing the row. */

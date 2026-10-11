@@ -10,7 +10,14 @@ import { loadApp, mountPage, openRowMenu, stopFollowing } from "./fixtures/page"
 const mounts = vi.hoisted(() => [] as string[]);
 /** The mounted view's exit callback, so a test can play the shell exiting. */
 const view = vi.hoisted(() => ({
-  onExit: null as null | ((id: string, status: "exited" | "gone", code: number | null) => void),
+  onExit: null as
+    | null
+    | ((
+        id: string,
+        status: "exited" | "gone",
+        code: number | null,
+        typedAgoMs: number | null,
+      ) => void),
 }));
 vi.mock("@/components/terminal-view", async () => {
   const { useEffect } = await import("react");
@@ -22,7 +29,12 @@ vi.mock("@/components/terminal-view", async () => {
     }: {
       terminalId: string;
       fresh?: boolean;
-      onExit?: (id: string, status: "exited" | "gone", code: number | null) => void;
+      onExit?: (
+        id: string,
+        status: "exited" | "gone",
+        code: number | null,
+        typedAgoMs: number | null,
+      ) => void;
     }) => {
       view.onExit = onExit ?? null;
       useEffect(() => {
@@ -1283,7 +1295,7 @@ describe("returning to the page", () => {
     await screen.findByTestId("terminal-view");
     await waitFor(() => expect(summary()).toHaveTextContent(/^1 running/));
     page.sdk.terminals.get.mockClear();
-    act(() => view.onExit?.("t1", "exited", 3));
+    act(() => view.onExit?.("t1", "exited", 3, null));
     expect(sidebar().getByText("exit 3")).toBeInTheDocument();
     expect(summary()).toHaveTextContent(/^0 running/);
     expect(page.sdk.terminals.get).not.toHaveBeenCalled();
@@ -1503,5 +1515,31 @@ describe("returning to the page", () => {
     expect(page.titleBar()).toHaveTextContent("Last known · 1 running");
     await page.slot.setRealtimeConnectionState("connected");
     await waitFor(() => expect(summary()).toHaveTextContent(/^1 running$/));
+  });
+
+  it("LIST-32, ACT-7: a terminal the user ended from the view goes, and the next row is selected", async () => {
+    const w = world({
+      terminals: [terminal({ id: "t1", title: "shell" }), terminal({ id: "t2", title: "dev" })],
+    });
+    const page = await mountPage(w, "proj_1/env_a/t1");
+    await screen.findByTestId("terminal-view");
+    const session = w.terminals[0];
+    if (!session) throw new Error("fixture");
+    session.status = "exited";
+    session.exitCode = 130;
+    act(() => view.onExit?.("t1", "exited", 130, 400));
+    expect(sidebar().queryByText("shell")).toBeNull();
+    await waitFor(() => expect(page.subPath()).toBe("proj_1/env_a/t2"));
+    await sleep(50);
+    expect(sidebar().queryByText("shell")).toBeNull();
+  });
+
+  it("LIST-32, LIST-11: a terminal that ends without recent typing in the view keeps its exited row", async () => {
+    const w = world({ terminals: [terminal({ id: "t1", title: "shell" })] });
+    const page = await mountPage(w, "proj_1/env_a/t1");
+    await screen.findByTestId("terminal-view");
+    act(() => view.onExit?.("t1", "exited", 1, 6_000));
+    expect(sidebar().getByText("exit 1")).toBeInTheDocument();
+    expect(page.subPath()).toBe("proj_1/env_a/t1");
   });
 });

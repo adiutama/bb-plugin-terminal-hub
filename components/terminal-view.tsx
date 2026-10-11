@@ -21,7 +21,12 @@ export interface TerminalViewProps {
   onOutput?: (terminalId: string, bytes: Uint8Array) => void;
   onStatus?: (terminalId: string, status: ViewStatus, detail: string | null) => void;
   /** VIEW-7: the session ended, so the list can mark its row at once. */
-  onExit?: (terminalId: string, status: "exited" | "gone", exitCode: number | null) => void;
+  onExit?: (
+    terminalId: string,
+    status: "exited" | "gone",
+    exitCode: number | null,
+    typedAgoMs: number | null,
+  ) => void;
 }
 
 function usePageVisible(): boolean {
@@ -76,7 +81,8 @@ export function TerminalView({
         setStatus({ status: next, detail });
         handlers.current.onStatus?.(terminalId, next, detail);
       },
-      onExit: (status, exitCode) => handlers.current.onExit?.(terminalId, status, exitCode),
+      onExit: (status, exitCode, typedAgoMs) =>
+        handlers.current.onExit?.(terminalId, status, exitCode, typedAgoMs),
       onOutput: (bytes) => handlers.current.onOutput?.(terminalId, bytes),
       onFindRequested: () => setFinding(true),
       onSearchResults: setResults,

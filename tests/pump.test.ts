@@ -760,3 +760,56 @@ it.each([false, true])(
     });
   },
 );
+
+it("LIST-32: reports how long before the exit the user last typed, counting only their own input", async () => {
+  let exited = false;
+  let query = false;
+  const call = vi.fn(async (method: string, input: Record<string, unknown>): Promise<any> => {
+    if (method !== "read") return { ok: true };
+    if (input.replay) return output("Boo");
+    if (exited) return { ...output(""), status: "exited", exitCode: 130 };
+    if (query) {
+      query = false;
+      return output("\x1b[6n", 2);
+    }
+    return output("");
+  });
+  // A program's query answered by the view, even a focused one, is not typing.
+  const quietExit = vi.fn();
+  const quiet = createPump(call, { onExit: quietExit });
+  await vi.waitFor(() => expect(quiet.container.textContent).toContain("Boo"));
+  quiet.pump.setFocused(true);
+  // Copying output, or a lone modifier, is not typing either.
+  const quietInput = quiet.container.querySelector("textarea") ?? quiet.container;
+  fireEvent.keyDown(quietInput, { key: "c", metaKey: true });
+  fireEvent.keyDown(quietInput, { key: "Shift", shiftKey: true });
+  query = true;
+  await vi.waitFor(() => expect(call.mock.calls.some(([method]) => method === "write")).toBe(true));
+  exited = true;
+  await vi.waitFor(() => expect(quietExit).toHaveBeenCalled());
+  expect(quietExit.mock.calls[0]).toEqual(["exited", 130, null]);
+
+  // Typing into the view, then the shell exits: the exit is theirs.
+  exited = false;
+  const onExit = vi.fn();
+  const typed = createPump(call, { onExit });
+  await vi.waitFor(() => expect(typed.container.textContent).toContain("Boo"));
+  const input = typed.container.querySelector("textarea") ?? typed.container;
+  fireEvent.keyDown(input, { key: "d", ctrlKey: true });
+  exited = true;
+  await vi.waitFor(() => expect(onExit).toHaveBeenCalled());
+  const [status, code, typedAgoMs] = onExit.mock.calls[0] ?? [];
+  expect([status, code]).toEqual(["exited", 130]);
+  expect(typedAgoMs).toBeGreaterThanOrEqual(0);
+  expect(typedAgoMs).toBeLessThan(5_000);
+
+  // The on-screen key bar counts as typing too.
+  exited = false;
+  const barExit = vi.fn();
+  const bar = createPump(call, { onExit: barExit });
+  await vi.waitFor(() => expect(bar.container.textContent).toContain("Boo"));
+  bar.pump.send("exit\r");
+  exited = true;
+  await vi.waitFor(() => expect(barExit).toHaveBeenCalled());
+  expect(barExit.mock.calls[0]?.[2]).toBeLessThan(5_000);
+});
