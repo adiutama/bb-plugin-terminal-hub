@@ -230,6 +230,29 @@ describe("terminal view", () => {
     ).toBe(true);
   });
 
+  it("VIEW-4: keeps focus when the first replay swaps in a fresh Ghostty core", async () => {
+    // Real browsers fire focusout when a focused input is removed; jsdom does not.
+    const { WTerm } = await import("@wterm/dom");
+    const destroy = WTerm.prototype.destroy;
+    vi.spyOn(WTerm.prototype, "destroy").mockImplementation(function (
+      this: InstanceType<typeof WTerm>,
+    ) {
+      const active = document.activeElement;
+      if (active instanceof HTMLElement && this.element.contains(active)) {
+        active.dispatchEvent(new FocusEvent("focusout", { bubbles: true, relatedTarget: null }));
+      }
+      return destroy.call(this);
+    });
+    const { sdk } = shell("ready\r\n", { id: "term_1", cols: 120, rows: 32 });
+    showView(sdk, { cols: 120, rows: 32, fresh: true });
+    await waitFor(() => expect(document.body.textContent).toContain("ready"));
+    await waitFor(() => expect(resizes(sdk)).toEqual([[80, 25]]));
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(
+      document.querySelector("[data-renderer=ghostty]")?.contains(document.activeElement),
+    ).toBe(true);
+  });
+
   it("VIEW-8: unfocused, renders at the shell's own columns and rows, whatever the space", async () => {
     const { sdk } = shell("ready\r\n", { id: "term_1", cols: 100, rows: 30 });
     const { pump, container } = pumpOver(sdk, { cols: 100, rows: 30 });

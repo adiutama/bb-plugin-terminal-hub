@@ -3,6 +3,7 @@
 // One store per open page. The title-bar count (NAV-6) reads the same store
 // through `activeHubStore`, so the header never polls on its own.
 import { type ActionsSdk, type BulkCloseResult, closeAll, closeTerminal } from "./actions";
+import { isNotFound } from "./errors";
 import {
   type EnvironmentSnapshot,
   type GroupedEnvironment,
@@ -147,6 +148,8 @@ export class HubStore {
   private retained = new Map<string, Retained>();
   /** Closed or dismissed here: never retained or re-shown as exited. */
   private gone = new Set<string>();
+  /** Exit checks in flight, so a refresh does not start a second one. */
+  private checking = new Set<string>();
   private hints = new Map<string, ServerHint>();
   private hintRequested = new Set<string>();
   private tails = new Map<string, OutputTail>();
@@ -312,6 +315,7 @@ export class HubStore {
       this.environmentErrors.set(environmentId, message(error));
     }
     this.attempted.add(environmentId);
+    this.recheckPending();
     this.emit();
   }
 
@@ -336,6 +340,7 @@ export class HubStore {
       }
       this.attempted.add(env.id);
     });
+    this.recheckPending();
     this.emit();
   }
 
@@ -356,6 +361,7 @@ export class HubStore {
         if (!terminals.has(id)) this.replaceThreadTerminals(id, [], previous.get(id) ?? null);
       }
       for (const [id, list] of terminals) this.replaceThreadTerminals(id, list);
+      this.recheckPending();
       this.error = null;
     } catch (error) {
       if (generation !== this.generation) return;
@@ -472,6 +478,8 @@ export class HubStore {
   /** LIST-11: a listed terminal vanished; keep it if it exited. */
   private async checkExited(terminal: TerminalSession, thread: ThreadRecord | null): Promise<void> {
     const generation = this.generation;
+    if (this.checking.has(terminal.id)) return;
+    this.checking.add(terminal.id);
     try {
       const session = await this.sdk.terminals.get({ terminalId: terminal.id });
       if (generation !== this.generation || this.gone.has(terminal.id)) return;
@@ -482,12 +490,22 @@ export class HubStore {
         // Still alive, just not in that list any more: the next listing has it.
         this.retained.delete(terminal.id);
       }
-    } catch {
-      // Gone without a trace: nothing to show.
+    } catch (error) {
       if (generation !== this.generation) return;
-      this.retained.delete(terminal.id);
+      // Gone without a trace: nothing to show. Any other failure keeps the
+      // row waiting; the next refresh asks again.
+      if (isNotFound(error)) this.retained.delete(terminal.id);
+    } finally {
+      this.checking.delete(terminal.id);
     }
     this.emit();
+  }
+
+  /** Asks again about rows whose exit check failed. */
+  private recheckPending(): void {
+    for (const { terminal, thread, pending } of this.retained.values()) {
+      if (pending) void this.checkExited(terminal, thread);
+    }
   }
 
   /** LIST-7: read a terminal's last 4 KB once, when it first appears. */

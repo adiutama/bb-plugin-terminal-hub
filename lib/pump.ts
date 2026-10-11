@@ -193,6 +193,11 @@ export class TerminalPump {
         replacing && this.terminal
           ? { cols: this.terminal.cols, rows: this.terminal.rows }
           : { cols: Math.max(2, this.sessionSize.cols), rows: Math.max(2, this.sessionSize.rows) };
+      // Destroying a focused input fires focusout in real browsers, and Wterm
+      // focuses its new input during init: neither is the user moving focus.
+      const hadFocus = this.focused;
+      const previousFocus = document.activeElement;
+      this.initializing = true;
       if (replacing) {
         this.terminal?.destroy();
         this.core?.dispose();
@@ -231,9 +236,6 @@ export class TerminalPump {
         resize(cols, rows);
       };
       this.terminal = terminal;
-      const previousFocus = document.activeElement;
-      // Wterm focuses its input during init; that is not the user focusing us.
-      this.initializing = true;
       try {
         await terminal.init();
       } finally {
@@ -257,7 +259,7 @@ export class TerminalPump {
       if (this.visible) {
         this.start();
       }
-      if (this.visible && (this.wantsFocus || this.focused)) {
+      if (this.visible && (this.wantsFocus || hadFocus)) {
         this.wantsFocus = true;
         this.focus();
         // Wterm's init already focused its input (ignored above), so focus()
@@ -277,6 +279,7 @@ export class TerminalPump {
         })
         .catch(() => {});
     } catch (error) {
+      this.initializing = false;
       if (this.disposed) return;
       if (replacing) {
         this.replayPending = true;

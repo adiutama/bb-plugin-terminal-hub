@@ -96,7 +96,7 @@ export function SessionRow({
           ) : null}
           {row.stale && thread?.inactiveSince != null ? (
             <span className="flex items-center gap-1 text-xs text-amber-700 dark:text-amber-400">
-              <Icon name="TriangleAlert" className="size-3" aria-hidden="true" />
+              <span aria-hidden="true">⚠</span>
               thread {thread.state} {formatAgo(thread.inactiveSince, now)}
             </span>
           ) : null}
@@ -122,7 +122,7 @@ export function SessionRow({
             className="mt-1 size-7 shrink-0 text-muted-foreground"
             aria-label={`Actions for ${title}`}
           >
-            <Icon name="Ellipsis" className="size-4" aria-hidden="true" />
+            <Icon name="MoreHorizontal" className="size-4" aria-hidden="true" />
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end">

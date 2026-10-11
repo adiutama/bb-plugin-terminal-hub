@@ -25,6 +25,8 @@ export interface MountedPage {
   subPath(): string;
   /** toPluginPanel calls, in order. */
   navigations(): { subPath: string; replace: boolean }[];
+  /** Shows another URL, as Back or a pasted link would. */
+  goTo(subPath: string): void;
 }
 
 export async function mountPage(
@@ -64,6 +66,10 @@ export async function mountPage(
     emitThreadChanged: bb.emitThreadChanged,
     subPath: () => current,
     navigations,
+    goTo: (subPath) => {
+      current = subPath;
+      act(() => slot.lifecycle.rerender(<Page subPath={subPath} />));
+    },
   };
 }
 

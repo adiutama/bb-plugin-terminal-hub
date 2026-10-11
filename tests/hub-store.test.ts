@@ -337,4 +337,19 @@ describe("hub store", () => {
     await vi.advanceTimersByTimeAsync(FAST_REFRESH_MS);
     expect(ids()).toEqual(["term_late"]);
   });
+
+  it("LIST-11: a failed exit check keeps the row and asks again on the next refresh", async () => {
+    const w = world({ terminals: [terminal({ id: "term_1" })] });
+    const { sdk, store, ids } = open(w, "env_a");
+    await vi.advanceTimersByTimeAsync(0);
+    sdk.terminals.get.mockRejectedValueOnce(new Error("network hiccup"));
+    const session = w.terminals[0];
+    if (!session) throw new Error("fixture");
+    session.status = "exited";
+    session.exitCode = 7;
+    await vi.advanceTimersByTimeAsync(FAST_REFRESH_MS);
+    expect(ids()).toEqual(["term_1"]);
+    await vi.advanceTimersByTimeAsync(FAST_REFRESH_MS);
+    expect(store.getView().rows[0]?.terminal.exitCode).toBe(7);
+  });
 });

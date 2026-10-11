@@ -23,6 +23,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { nextSelection, renameTerminal, restartTerminal, settledTargets } from "@/lib/actions";
+import { isNotFound } from "@/lib/errors";
 import { type HubSdk, HubStore, setActiveHubStore } from "@/lib/hub-store";
 import type { HubRow, TerminalSession } from "@/lib/inventory";
 import { ALL, formatRoute, PANEL_PATH, parseRoute, type Route } from "@/lib/route";
@@ -32,15 +33,6 @@ const NEW_TERMINAL_SIZE = { cols: 120, rows: 32 };
 
 function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
-}
-
-/** bb reports a terminal that does not exist as a not-found error. */
-export function isNotFound(error: unknown): boolean {
-  if (typeof error !== "object" || error === null) return false;
-  const record = error as { status?: unknown; code?: unknown; message?: unknown };
-  if (record.status === 404) return true;
-  const text = `${String(record.code ?? "")} ${String(record.message ?? "")}`;
-  return /not[\s_-]?found/i.test(text);
 }
 
 type Missing =
@@ -101,8 +93,11 @@ export function TerminalsPage({ subPath }: PluginNavPanelProps) {
   const selectedRow = view.rows.find((row) => row.terminal.id === selectedId) ?? null;
   // Terminals listed during this visit. NAV-5 is about links to terminals the
   // page never saw; a listed one that goes away is the list's business.
-  const seen = useRef(new Set<string>());
-  for (const row of view.rows) seen.current.add(row.terminal.id);
+  const seen = useRef({ projectId: route.projectId, ids: new Set<string>() });
+  if (seen.current.projectId !== route.projectId) {
+    seen.current = { projectId: route.projectId, ids: new Set() };
+  }
+  for (const row of view.rows) seen.current.ids.add(row.terminal.id);
   const selectedSession = selectedRow?.terminal ?? (selectedId ? lookups.get(selectedId) : null);
   const listed = view.sections.length > 0 && view.sections.every((section) => section.loaded);
 
@@ -112,7 +107,7 @@ export function TerminalsPage({ subPath }: PluginNavPanelProps) {
   useEffect(() => {
     if (!selectedId || selectedRow || !listed || lookups.has(selectedId)) return;
     // Closed or dismissed here: the action moves the selection itself (ACT-7).
-    if (store.removedHere(selectedId) || seen.current.has(selectedId)) return;
+    if (store.removedHere(selectedId) || seen.current.ids.has(selectedId)) return;
     let cancelled = false;
     sdk.terminals.get({ terminalId: selectedId }).then(
       (session) => {
