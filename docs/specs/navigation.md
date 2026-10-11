@@ -1,8 +1,8 @@
 # Navigation
 
-- Status: implemented
+- Status: agreed
 - Prefix: NAV
-- Decisions: 202610101629, 202610110125
+- Decisions: 202610101629, 202610110125, 202610110156
 
 How the Terminals page is reached, and how its URL keeps the user on the same
 shell across reloads and back/forward.
@@ -27,4 +27,4 @@ part of the URL after the page path (`subPath`) carries the selection.
 - **NAV-8** Changing the project or environment replaces the current history entry; only selecting a terminal adds one.
 - **NAV-5** A link to a terminal that no longer exists opens its environment's list with a notice that the terminal is gone.
 - **NAV-6** The page title bar shows the number of running terminals in the selected environment, or in the whole project when "All environments" is selected. (ADR 202610101629) (ADR 202610110125)
-
+- **NAV-9** The URL does not carry the list's filter (LIST-18), and typing in it adds or replaces no history entry. Opening or reloading the page starts with an empty filter; navigating within the open page, back and forward included, keeps it as LIST-21 says. (ADR 202610110156)
