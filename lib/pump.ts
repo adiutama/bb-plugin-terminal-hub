@@ -35,8 +35,12 @@ export interface PumpOptions {
   /** Take keyboard focus once ready, e.g. for a terminal the user just created. */
   focusOnReady?: boolean;
   onStatus: (status: ViewStatus, detail: string | null) => void;
-  /** The session ended: it exited (with its code, if known), or was closed (`gone`). */
-  onExit?: (status: "exited" | "gone", exitCode: number | null) => void;
+  /**
+   * The session ended: it exited (with its code, if known), or was closed
+   * (`gone`). `typedAgoMs` is how long before that the user last typed here,
+   * or null if they never did (LIST-32).
+   */
+  onExit?: (status: "exited" | "gone", exitCode: number | null, typedAgoMs: number | null) => void;
   /** Bytes the shell wrote, live or replayed, for the row's server hint. */
   onOutput?: (bytes: Uint8Array) => void;
   /** A meaningful OSC title the shell set, already normalised. Null clears it. */
@@ -72,6 +76,8 @@ export class TerminalPump {
   private outbox: string[] = [];
   private writing = false;
   private status: ViewStatus = "connecting";
+  /** When the user last typed or sent keys here (LIST-32). */
+  private lastInputAt: number | null = null;
   private visible = false;
   private wantsFocus: boolean;
   /** DOM focus is inside the view: the only state that may resize the shell (VIEW-4). */
@@ -163,6 +169,21 @@ export class TerminalPump {
       },
       { capture: true, signal: this.abort.signal },
     );
+    // LIST-32: only the user's own keys, pastes, and composed text count as
+    // typing; the terminal's replies to a program's queries arrive as input too.
+    const typed = (event: Event) => {
+      // A lone modifier, or a Cmd shortcut (copy, find), sends nothing to the shell.
+      if (
+        event instanceof KeyboardEvent &&
+        (event.metaKey || ["Shift", "Control", "Alt", "Meta"].includes(event.key))
+      ) {
+        return;
+      }
+      this.lastInputAt = Date.now();
+    };
+    for (const type of ["keydown", "paste", "compositionend"] as const) {
+      options.container.addEventListener(type, typed, { capture: true, signal: this.abort.signal });
+    }
     options.container.addEventListener("keydown", this.onKeyDown, {
       capture: true,
       signal: this.abort.signal,
@@ -498,6 +519,7 @@ export class TerminalPump {
 
   /** Write bytes as if they had been typed. Used by the on-screen key bar. */
   send(data: string): void {
+    this.lastInputAt = Date.now();
     this.clearSelectionSnapshot();
     this.scrollToBottom();
     this.handleInput(data);
@@ -695,7 +717,8 @@ export class TerminalPump {
           ? "Exited"
           : `Exited with code ${exitCode}`;
     this.setStatus("exited", label);
-    this.options.onExit?.(status === "gone" ? "gone" : "exited", exitCode);
+    const typedAgoMs = this.lastInputAt === null ? null : Date.now() - this.lastInputAt;
+    this.options.onExit?.(status === "gone" ? "gone" : "exited", exitCode, typedAgoMs);
   }
 
   /** Redraw the whole terminal from the session's retained scrollback. */

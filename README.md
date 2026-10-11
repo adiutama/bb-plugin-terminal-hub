@@ -49,6 +49,9 @@ N stale** at the end of that line closes them, after asking.
   known**, and nothing claims a terminal is missing. A terminal that exited
   meanwhile keeps its row with the exit code until you dismiss it. A reload
   starts fresh.
+- End a shell from its view (`exit`, Ctrl-D, or Ctrl-C on its process) and
+  its row goes away, with the next terminal selected. A terminal that exits on
+  its own, or from somewhere else, keeps its row and exit code so you notice.
 
 - **Environment** lists the environment's own terminals: the ones you start
   here with **New terminal**, and the ones agents start for long-running

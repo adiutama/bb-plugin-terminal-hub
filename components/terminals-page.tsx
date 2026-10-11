@@ -34,7 +34,13 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { nextSelection, renameTerminal, restartTerminal, settledTargets } from "@/lib/actions";
+import {
+  endedHere,
+  nextSelection,
+  renameTerminal,
+  restartTerminal,
+  settledTargets,
+} from "@/lib/actions";
 import {
   environmentOf,
   filterAll,
@@ -666,7 +672,14 @@ export function TerminalsPage({ subPath }: PluginNavPanelProps) {
                 rows={selectedSession.rows}
                 fresh={fresh.current.has(selectedId)}
                 onOutput={(id, bytes) => store?.pushOutput(id, bytes)}
-                onExit={(id, status, exitCode) => store?.noteEnded(id, status, exitCode)}
+                onExit={(id, status, exitCode, typedAgoMs) => {
+                  // LIST-32: ended by the user's own typing here: gone, like a
+                  // dismissed row, and the selection moves on (ACT-7).
+                  if (endedHere(typedAgoMs)) {
+                    store?.dismiss(id);
+                    if (id === selectedId) select(nextSelection(order, id), true);
+                  } else store?.noteEnded(id, status, exitCode);
+                }}
               />
             </div>
           </>
