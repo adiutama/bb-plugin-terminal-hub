@@ -1,8 +1,8 @@
 # Navigation
 
-- Status: implemented
+- Status: agreed
 - Prefix: NAV
-- Decisions: 202610101629, 202610110125, 202610110156
+- Decisions: 202610101629, 202610110324
 
 How the Terminals page is reached, and how its URL keeps the user on the same
 shell across reloads and back/forward.
@@ -23,8 +23,8 @@ part of the URL after the page path (`subPath`) carries the selection.
 - **NAV-2** The URL carries the selected project, environment, and terminal; reloading the page restores all three.
 - **NAV-3** Selecting a terminal adds a history entry, so back and forward move between previously selected shells.
 - **NAV-4** Opening the page without a project in the URL selects the current project from `useBbContext`, or else the first project in BB's project list.
-- **NAV-7** Without an environment in the URL, "All environments" is selected; the URL uses `all` in place of an environment id. (ADR 202610110125)
+- **NAV-7** Without an environment in the URL, "All environments" is selected; the URL uses `all` in place of an environment id. (ADR 202610110324)
 - **NAV-8** Changing the project or environment replaces the current history entry; only selecting a terminal adds one.
 - **NAV-5** A link to a terminal that no longer exists opens its environment's list with a notice that the terminal is gone.
-- **NAV-6** The page title bar shows the number of running terminals in the selected environment, or in the whole project when "All environments" is selected. (ADR 202610101629) (ADR 202610110125)
-- **NAV-9** The URL does not carry the list's filter (LIST-18), and typing in it adds or replaces no history entry. Opening or reloading the page starts with an empty filter; navigating within the open page, back and forward included, keeps it as LIST-21 says. (ADR 202610110156)
+- **NAV-6** The page title bar shows the number of running terminals in the selected environment, or in the whole project when "All environments" is selected. (ADR 202610101629) (ADR 202610110324)
+- **NAV-9** The URL does not carry the list's filter (LIST-18), and typing in it adds or replaces no history entry. Opening or reloading the page starts with an empty filter; navigating within the open page, back and forward included, keeps it as LIST-21 says. (ADR 202610110324)

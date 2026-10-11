@@ -1,9 +1,9 @@
 # Focus the project-wide view on environments that have terminals
 
-- Status: accepted
+- Status: superseded
 - Date: 2026-10-11
 - Supersedes: 202610101721
-- Superseded by: none
+- Superseded by: 202610110324
 - Applies to: docs/specs/session-list.md, docs/specs/navigation.md, docs/specs/actions.md, components/session-list.tsx, components/terminals-page.tsx, lib/hub-store.ts
 
 ## Context
