@@ -9,7 +9,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { toast } from "sonner";
 import { ConfirmDialog, RenameDialog } from "@/components/dialogs";
-import { NewTerminalButton, SummaryLine } from "@/components/list-header";
+import { FilterBox, NewTerminalButton, SummaryLine } from "@/components/list-header";
 import { SessionList } from "@/components/session-list";
 import type { RowActions } from "@/components/session-row";
 import { TerminalView } from "@/components/terminal-view";
@@ -24,10 +24,20 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { nextSelection, renameTerminal, restartTerminal, settledTargets } from "@/lib/actions";
-import { environmentOf, splitSections, summarize, visibleOrder } from "@/lib/all-view";
+import {
+  environmentOf,
+  filterAll,
+  filteredOrder,
+  filterSection,
+  filterWords,
+  splitSections,
+  summarize,
+  visibleOrder,
+} from "@/lib/all-view";
 import { isNotFound } from "@/lib/errors";
-import { type HubSdk, HubStore, setActiveHubStore } from "@/lib/hub-store";
+import { type HubSdk, HubStore, type Section, setActiveHubStore } from "@/lib/hub-store";
 import type { HubRow, TerminalSession } from "@/lib/inventory";
+import { isFilterShortcut } from "@/lib/keyboard";
 import { ALL, formatRoute, PANEL_PATH, parseRoute, type Route } from "@/lib/route";
 
 /** A new hub terminal's size until the view fits it to the page. */
@@ -166,13 +176,38 @@ export function TerminalsPage({ subPath }: PluginNavPanelProps) {
   const selectedEnvironment = all
     ? (environmentOf(view.sections, selectedId) ?? selectedSession?.environmentId ?? null)
     : route.environment;
-  const { shown, empty } = all
-    ? splitSections(view.sections, selectedEnvironment)
-    : { shown: view.sections, empty: [] };
+  // LIST-21: the filter lasts while the page is open, until the project changes.
+  const [filter, setFilter] = useState("");
+  const [filterProject, setFilterProject] = useState(route.projectId);
+  if (filterProject !== route.projectId) {
+    setFilterProject(route.projectId);
+    setFilter("");
+  }
+  const filterRef = useRef<HTMLInputElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+  const words = filterWords(filter);
+  const filtering = words.length > 0;
+  const filterContext = { words, hints: view.hints, homes: view.homes };
+
+  let shown: Section[];
+  let empty: Section[];
+  if (!filtering) {
+    ({ shown, empty } = all
+      ? splitSections(view.sections, selectedEnvironment)
+      : { shown: view.sections, empty: [] });
+  } else if (all) {
+    // LIST-19: matching sections and failed ones; matching empty environments.
+    ({ shown, emptyMatches: empty } = filterAll(view.sections, filterContext, view.complete));
+  } else {
+    shown = view.sections.map((section) => filterSection(section, filterContext));
+    empty = [];
+  }
   // ACT-7: the next selection follows what the list shows.
-  const order = all
-    ? visibleOrder(shown, collapsed, selectedId)
-    : view.rows.map((row) => row.terminal.id);
+  const order = filtering
+    ? filteredOrder(view.sections, shown, selectedId)
+    : all
+      ? visibleOrder(shown, collapsed, selectedId)
+      : view.rows.map((row) => row.terminal.id);
 
   const doClose = async (row: HubRow) => {
     setBusy(true);
@@ -266,7 +301,21 @@ export function TerminalsPage({ subPath }: PluginNavPanelProps) {
 
   const environmentOptions = view.environments ?? [];
   return (
-    <div className="flex h-full min-h-0 flex-1">
+    // LIST-22: `/` from anywhere in the page focuses the filter. The root takes
+    // focus from clicks on blank space (tabIndex -1), so the page counts as
+    // focused without making the root a Tab stop.
+    // biome-ignore lint/a11y/noStaticElementInteractions: the handler acts on `/` only.
+    <div
+      tabIndex={-1}
+      className="flex h-full min-h-0 flex-1 outline-none"
+      onKeyDown={(event) => {
+        if (!isFilterShortcut(event)) return;
+        event.preventDefault();
+        event.stopPropagation();
+        filterRef.current?.focus();
+        filterRef.current?.select();
+      }}
+    >
       <aside className="flex w-80 shrink-0 flex-col border-r border-border">
         <div className="flex flex-col gap-2 border-b border-border p-2">
           <Select
@@ -309,6 +358,7 @@ export function TerminalsPage({ subPath }: PluginNavPanelProps) {
             creating={creating}
             onCreate={(environmentId) => void newTerminal(environmentId)}
           />
+          <FilterBox value={filter} onChange={setFilter} inputRef={filterRef} listRef={listRef} />
           <SummaryLine
             summary={summarize(view.rows, view.hints)}
             onStale={() => setBulk(settled)}
@@ -346,6 +396,9 @@ export function TerminalsPage({ subPath }: PluginNavPanelProps) {
             actions={actions}
             shown={shown}
             empty={empty}
+            filter={filtering ? filter.trim() : ""}
+            listRef={listRef}
+            focusFilter={() => filterRef.current?.focus()}
             collapsed={collapsed}
             showEmpty={showEmpty}
             onToggleSection={(environmentId) =>

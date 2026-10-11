@@ -54,6 +54,7 @@ export function SessionRow({
         type="button"
         className="flex min-w-0 flex-1 items-start gap-2 px-2 py-1.5 text-left"
         aria-current={selected ? "true" : undefined}
+        data-nav-item=""
         onClick={() => actions.onSelect(row)}
       >
         {/* LIST-5: running, or exited with its code. */}

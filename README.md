@@ -33,6 +33,13 @@ how many are stale (click it to clean them up).
 - **New terminal** starts a shell in the selected environment (in All, the
   selected terminal's). Its **▾** menu starts one in any environment of the
   project, including the empty ones.
+- The **filter** above the list narrows it to terminals whose title,
+  environment, thread, directory, or server address contains every word you
+  type, so `3000` finds the dev server. Empty environments whose name matches
+  are listed too. Press **/** while the page has focus to jump to it, **↓**
+  and **↑** to move through the rows, **Enter** to open one, and **Esc** to
+  clear the filter. The filter is not kept in the URL, so a reload starts
+  with the full list.
 
 - **Environment** lists the environment's own terminals: the ones you start
   here with **New terminal**, and the ones agents start for long-running

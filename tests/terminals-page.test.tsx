@@ -649,3 +649,303 @@ describe("actions", () => {
     expect(screen.queryByRole("region", { name: "main" })).toBeNull();
   }, 10_000);
 });
+
+describe("filter and keyboard", () => {
+  const filterBox = () =>
+    screen.findByRole<HTMLInputElement>("textbox", { name: "Filter terminals" });
+  const type = async (text: string) => {
+    const input = await filterBox();
+    fireEvent.change(input, { target: { value: text } });
+    return input;
+  };
+  /** The main button of the row titled `title`. */
+  const rowButton = async (title: string) => {
+    const button = (await screen.findByText(title)).closest("button");
+    if (!button) throw new Error(`no row ${title}`);
+    return button;
+  };
+
+  it("LIST-18: typing narrows the list to matching rows, server hints included", async () => {
+    const w = world({
+      threads: [thread({ id: "thr_1", title: "Fix flaky tests" })],
+      terminals: [
+        terminal({ id: "web", title: "dev server" }),
+        terminal({ id: "sh", title: "zsh" }),
+        terminal({ id: "t", title: "pnpm test", threadId: "thr_1" }),
+      ],
+      output: { web: "  ➜  Local:   http://localhost:3000/\r\n" },
+    });
+    await mountPage(w, "proj_1/all");
+    expect(await screen.findByPlaceholderText("Filter terminals, environments, threads…")).toBe(
+      await filterBox(),
+    );
+    const summary = await screen.findByRole("region", { name: "Summary" });
+    await waitFor(() => expect(summary).toHaveTextContent("1 server"));
+    await type("3000");
+    expect(await screen.findByText("dev server")).toBeTruthy();
+    expect(screen.queryByText("zsh")).toBeNull();
+    expect(screen.queryByRole("region", { name: "From threads" })).toBeNull();
+    await type("flaky pnpm");
+    expect(await screen.findByText("pnpm test")).toBeTruthy();
+    expect(screen.queryByText("dev server")).toBeNull();
+    await type("   ");
+    expect(await screen.findByText("zsh")).toBeTruthy();
+    await type("nothing");
+    expect(await screen.findByText("No terminals match “nothing”.")).toBeTruthy();
+  });
+
+  it("LIST-18: the selected terminal's row hides when it does not match, and its view stays open", async () => {
+    const w = world({
+      terminals: [terminal({ id: "t1", title: "one" }), terminal({ id: "t2", title: "two" })],
+    });
+    await mountPage(w, "proj_1/all/t1");
+    await screen.findByText("one");
+    await type("two");
+    await waitFor(() => expect(screen.queryByText("one")).toBeNull());
+    expect(screen.getByTestId("terminal-view")).toHaveTextContent("t1");
+  });
+
+  it("LIST-19: a collapsed section opens while filtering, and is collapsed again after", async () => {
+    const w = manyEnvironments(1);
+    w.terminals.push(
+      terminal({ id: "a1", title: "one" }),
+      terminal({ id: "b1", title: "two", environmentId: "env_0" }),
+    );
+    await mountPage(w, "proj_1/all");
+    fireEvent.click(await screen.findByRole("button", { name: "Collapse wt-0" }));
+    expect(screen.queryByText("two")).toBeNull();
+    await type("two");
+    const section = await screen.findByRole("region", { name: "wt-0" });
+    expect(within(section).getByText("two")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /^(Collapse|Expand) / })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Clear filter" }));
+    expect(await screen.findByRole("button", { name: "Expand wt-0" })).toBeTruthy();
+    expect(screen.queryByText("two")).toBeNull();
+  });
+
+  it("LIST-19, LIST-20, LIST-22: matching empty environments follow the no-match message; Enter selects the first", async () => {
+    const w = manyEnvironments(3);
+    w.terminals.push(terminal({ id: "a1", title: "one" }));
+    const page = await mountPage(w, "proj_1/all");
+    await screen.findByRole("button", { name: "Show 3 empty environments" });
+    const input = await type("wt- 1");
+    const empty = await screen.findByRole("region", { name: "Empty environments" });
+    expect(
+      within(empty)
+        .getAllByRole("button")
+        .map((b) => b.textContent),
+    ).toEqual(["wt-10 running"]);
+    expect(screen.getByText("No terminals match “wt- 1”.")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /empty environments/ })).toBeNull();
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() => expect(page.subPath()).toBe("proj_1/env_1"));
+    expect(input).toHaveValue("wt- 1");
+
+    // From the header itself, focus stays in the page once the header is gone.
+    page.goTo("proj_1/all");
+    const header = await screen.findByRole("button", { name: /^wt-1/ });
+    header.focus();
+    fireEvent.click(header);
+    await waitFor(() => expect(page.subPath()).toBe("proj_1/env_1"));
+    expect(document.activeElement).toBe(input);
+  });
+
+  it("LIST-19, LIST-20: before the list is complete, no empty environments or no-match message", async () => {
+    const w = manyEnvironments(2);
+    w.threads.push(thread({ id: "thr_1" }), thread({ id: "thr_2" }));
+    const page = await mountPage(w, "proj_1/all");
+    const slow = gate();
+    const real = page.sdk.terminals.list.getMockImplementation();
+    page.sdk.terminals.list.mockImplementation(async (args) => {
+      if (args.scope.kind === "thread" && args.scope.threadId === "thr_2") await slow.promise;
+      return real?.(args) as never;
+    });
+    await type("wt");
+    expect(await screen.findByText(/Scanning threads…/)).toBeTruthy();
+    expect(screen.queryByText(/No terminals match/)).toBeNull();
+    expect(screen.queryByRole("region", { name: "Empty environments" })).toBeNull();
+    slow.release();
+    expect(await screen.findByRole("region", { name: "Empty environments" })).toBeTruthy();
+    expect(screen.getByText("No terminals match “wt”.")).toBeTruthy();
+  });
+
+  it("LIST-19: an environment that failed to list keeps its section and error", async () => {
+    const w = twoEnvironments();
+    w.terminals.push(terminal({ id: "a1", title: "one" }));
+    const page = await mountPage(w, "proj_1/all");
+    const real = page.sdk.terminals.list.getMockImplementation();
+    page.sdk.terminals.list.mockImplementation(async (args) => {
+      if (args.scope.kind === "environment" && args.scope.environmentId === "env_b") {
+        throw new Error("host offline");
+      }
+      return real?.(args) as never;
+    });
+    await screen.findByText("Could not list this environment's terminals: host offline");
+    await type("one");
+    expect(await screen.findByRole("region", { name: "feature" })).toHaveTextContent(
+      "host offline",
+    );
+    expect(screen.getByText("one")).toBeTruthy();
+  });
+
+  it("LIST-20: in a single environment, says nothing matches once listed", async () => {
+    await mountPage(world({ terminals: [terminal({ id: "t1", title: "one" })] }), "proj_1/env_a");
+    await screen.findByText("one");
+    await type("zzz");
+    expect(await screen.findByText("No terminals match “zzz”.")).toBeTruthy();
+    expect(screen.queryByText("No terminals here yet.")).toBeNull();
+  });
+
+  it("LIST-21: the filter survives an environment change, clears on a project change, and the summary ignores it", async () => {
+    const w = world({
+      projects: [
+        { id: "proj_1", name: "Project one" },
+        { id: "proj_2", name: "Project two" },
+      ],
+      terminals: [terminal({ id: "t1", title: "one" }), terminal({ id: "t2", title: "two" })],
+    });
+    const page = await mountPage(w, "proj_1/all");
+    const input = await type("one");
+    const summary = await screen.findByRole("region", { name: "Summary" });
+    await waitFor(() => expect(summary).toHaveTextContent(/^2 running$/));
+    fireEvent.click(await screen.findByRole("button", { name: /^main/ }));
+    await waitFor(() => expect(page.subPath()).toBe("proj_1/env_a"));
+    expect(await filterBox()).toHaveValue("one");
+    expect(screen.queryByText("two")).toBeNull();
+    page.goTo("proj_2/all");
+    await waitFor(() => expect(input).toHaveValue(""));
+  });
+
+  it("LIST-22: `/` focuses the filter and selects its text, but not from a text field", async () => {
+    const w = world({ terminals: [terminal({ id: "t1", title: "one" })] });
+    await mountPage(w, "proj_1/env_a");
+    const input = await filterBox();
+    fireEvent.change(input, { target: { value: "on" } });
+    const row = await rowButton("one");
+    row.focus();
+    fireEvent.keyDown(row, { key: "/" });
+    expect(document.activeElement).toBe(input);
+    expect([input.selectionStart, input.selectionEnd]).toEqual([0, 2]);
+
+    // A click on blank space focuses the page itself.
+    const page = input.closest<HTMLElement>('[tabindex="-1"]');
+    if (!page) throw new Error("no focusable page root");
+    page.focus();
+    fireEvent.keyDown(page, { key: "/" });
+    expect(document.activeElement).toBe(input);
+
+    const menu = await openRowMenu("one");
+    fireEvent.click(within(menu).getByRole("menuitem", { name: "Rename" }));
+    const title = await screen.findByRole("textbox", { name: "Terminal title" });
+    title.focus();
+    fireEvent.keyDown(title, { key: "/" });
+    expect(document.activeElement).toBe(title);
+  });
+
+  it("LIST-22: Escape clears the filter, then moves to the selected row; ↓ enters the list; Enter selects the first row", async () => {
+    const w = world({
+      terminals: [terminal({ id: "t1", title: "one" }), terminal({ id: "t2", title: "two" })],
+    });
+    const page = await mountPage(w, "proj_1/env_a/t2");
+    const input = await type("o");
+    input.focus();
+    fireEvent.keyDown(input, { key: "Escape" });
+    expect(input).toHaveValue("");
+    expect(document.activeElement).toBe(input);
+    fireEvent.keyDown(input, { key: "Escape" });
+    expect(document.activeElement).toBe(await rowButton("two"));
+
+    input.focus();
+    fireEvent.keyDown(input, { key: "ArrowDown" });
+    expect(document.activeElement).toBe(await rowButton("one"));
+
+    fireEvent.change(input, { target: { value: "one" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() => expect(page.subPath()).toBe("proj_1/env_a/t1"));
+  });
+
+  it("LIST-23: arrows, Home, and End move focus without wrapping or selecting; ↑ from the first returns to the filter", async () => {
+    const w = world({
+      terminals: [
+        terminal({ id: "t1", title: "one" }),
+        terminal({ id: "t2", title: "two" }),
+        terminal({ id: "t3", title: "three" }),
+      ],
+    });
+    const page = await mountPage(w, "proj_1/env_a/t1");
+    const [one, two, three] = [
+      await rowButton("one"),
+      await rowButton("two"),
+      await rowButton("three"),
+    ];
+    const navigated = page.navigations().length;
+    one.focus();
+    fireEvent.keyDown(one, { key: "ArrowDown" });
+    expect(document.activeElement).toBe(two);
+    fireEvent.keyDown(two, { key: "End" });
+    expect(document.activeElement).toBe(three);
+    fireEvent.keyDown(three, { key: "ArrowDown" });
+    expect(document.activeElement).toBe(three);
+    fireEvent.keyDown(three, { key: "Home" });
+    expect(document.activeElement).toBe(one);
+    fireEvent.keyDown(one, { key: "ArrowUp" });
+    expect(document.activeElement).toBe(await filterBox());
+    expect(page.navigations()).toHaveLength(navigated);
+    expect(page.subPath()).toBe("proj_1/env_a/t1");
+    // Enter and Space select through the native button.
+    expect(two.tagName).toBe("BUTTON");
+    expect(two).toHaveAttribute("type", "button");
+  });
+
+  it("LIST-23: keys on a row's ⋯ button keep their meaning, and Tab order is unchanged", async () => {
+    const w = world({
+      terminals: [terminal({ id: "t1", title: "one" }), terminal({ id: "t2", title: "two" })],
+    });
+    await mountPage(w, "proj_1/env_a");
+    const trigger = await screen.findByRole("button", { name: "Actions for one" });
+    const two = await rowButton("two");
+    for (const button of [
+      await rowButton("one"),
+      two,
+      trigger,
+      screen.getByRole("button", { name: "Actions for two" }),
+    ]) {
+      expect(button).not.toHaveAttribute("tabindex", "-1");
+    }
+    trigger.focus();
+    fireEvent.keyDown(trigger, { key: "ArrowDown" });
+    expect(await screen.findByRole("menu")).toBeTruthy();
+    expect(document.activeElement).not.toBe(two);
+  });
+
+  it("NAV-9: typing in the filter adds no history entry, and opening the page again starts unfiltered", async () => {
+    const w = world({ terminals: [terminal({ id: "t1", title: "one" })] });
+    const page = await mountPage(w, "proj_1/env_a");
+    await screen.findByText("one");
+    const navigated = page.navigations().length;
+    await type("zzz");
+    await screen.findByText(/No terminals match/);
+    expect(page.navigations()).toHaveLength(navigated);
+    expect(page.subPath()).toBe("proj_1/env_a");
+    stopFollowing();
+    cleanup();
+    await mountPage(w, "proj_1/env_a");
+    expect(await filterBox()).toHaveValue("");
+    expect(await screen.findByText("one")).toBeTruthy();
+  });
+
+  it("ACT-7: with a filter, closing the selected terminal selects the next matching row", async () => {
+    const w = world({
+      terminals: [
+        terminal({ id: "t1", title: "dev one" }),
+        terminal({ id: "t2", title: "zsh" }),
+        terminal({ id: "t3", title: "dev two" }),
+      ],
+    });
+    const page = await mountPage(w, "proj_1/env_a/t1");
+    await type("dev");
+    const menu = await openRowMenu("dev one");
+    fireEvent.click(within(menu).getByRole("menuitem", { name: "Close" }));
+    await waitFor(() => expect(page.subPath()).toBe("proj_1/env_a/t3"));
+  });
+});
