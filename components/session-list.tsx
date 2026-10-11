@@ -63,7 +63,12 @@ function EnvironmentGroups({ section, props }: { section: Section; props: ListPr
   const empty = grouped.environment.length === 0 && grouped.threads.length === 0;
   return (
     <div className="flex flex-col gap-1">
-      {empty ? (
+      {section.error ? (
+        <p role="alert" className="px-2 pt-2 text-xs text-destructive">
+          Could not list this environment's terminals: {section.error}
+        </p>
+      ) : null}
+      {empty && !section.error ? (
         section.loaded ? (
           <p className="px-2 py-3 text-sm text-muted-foreground">No terminals here yet.</p>
         ) : (
@@ -91,7 +96,8 @@ function AllSection({ section, props }: { section: Section; props: ListProps }) 
     section.grouped.environment.length +
     section.grouped.threads.reduce((sum, group) => sum + group.rows.length, 0);
   const [expanded, setExpanded] = useState<boolean | null>(null);
-  const open = expanded ?? count > 0;
+  // Empty sections start collapsed, unless listing them failed (LIST-13).
+  const open = expanded ?? (count > 0 || section.error !== null);
   const name = section.environment.name;
   return (
     <section aria-label={name} className="flex flex-col">

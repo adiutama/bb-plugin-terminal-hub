@@ -99,6 +99,10 @@ export function TerminalsPage({ subPath }: PluginNavPanelProps) {
 
   const selectedId = route.terminalId;
   const selectedRow = view.rows.find((row) => row.terminal.id === selectedId) ?? null;
+  // Terminals listed during this visit. NAV-5 is about links to terminals the
+  // page never saw; a listed one that goes away is the list's business.
+  const seen = useRef(new Set<string>());
+  for (const row of view.rows) seen.current.add(row.terminal.id);
   const selectedSession = selectedRow?.terminal ?? (selectedId ? lookups.get(selectedId) : null);
   const listed = view.sections.length > 0 && view.sections.every((section) => section.loaded);
 
@@ -108,7 +112,7 @@ export function TerminalsPage({ subPath }: PluginNavPanelProps) {
   useEffect(() => {
     if (!selectedId || selectedRow || !listed || lookups.has(selectedId)) return;
     // Closed or dismissed here: the action moves the selection itself (ACT-7).
-    if (store.removedHere(selectedId)) return;
+    if (store.removedHere(selectedId) || seen.current.has(selectedId)) return;
     let cancelled = false;
     sdk.terminals.get({ terminalId: selectedId }).then(
       (session) => {
@@ -138,6 +142,11 @@ export function TerminalsPage({ subPath }: PluginNavPanelProps) {
   useEffect(() => {
     if (missing?.kind === "unreachable" && missing.terminalId !== selectedId) setMissing(null);
   }, [missing, selectedId]);
+
+  // A fresh shell's startup queries are answered on its first view only (VIEW-5).
+  useEffect(() => {
+    if (selectedId && selectedSession) fresh.current.delete(selectedId);
+  }, [selectedId, selectedSession]);
 
   const select = (terminalId: string | null, replace = false) => {
     setMissing(null);

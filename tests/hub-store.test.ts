@@ -235,4 +235,106 @@ describe("hub store", () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(store.getView().rows.map((row) => row.terminal.id)).not.toContain("late");
   });
+
+  it("LIST-11: keeps the exited rows of a deleted thread under that thread", async () => {
+    const w = world({
+      threads: [thread({ id: "thr_gone", title: "Throwaway" })],
+      terminals: [terminal({ id: "term_t", threadId: "thr_gone" })],
+    });
+    const { store } = open(w, "env_a");
+    await vi.advanceTimersByTimeAsync(0);
+    w.threads = [];
+    const session = w.terminals[0];
+    if (!session) throw new Error("fixture");
+    session.status = "exited";
+    session.exitCode = null;
+    await vi.advanceTimersByTimeAsync(FAST_REFRESH_MS);
+    const group = store.getView().sections[0]?.grouped.threads[0];
+    expect(group?.thread.title).toBe("Throwaway");
+    expect(group?.rows.map((row) => [row.terminal.id, row.terminal.status])).toEqual([
+      ["term_t", "exited"],
+    ]);
+  });
+
+  it("LIST-11: a vanished row stays in place until bb says it exited", async () => {
+    const w = world({ terminals: [terminal({ id: "term_1" })] });
+    const { sdk, store, ids } = open(w, "env_a");
+    await vi.advanceTimersByTimeAsync(0);
+    let answer!: () => void;
+    const real = sdk.terminals.get.getMockImplementation();
+    sdk.terminals.get.mockImplementationOnce(
+      (args) =>
+        new Promise((resolve) => {
+          answer = () => resolve(real?.(args) as never);
+        }),
+    );
+    const session = w.terminals[0];
+    if (!session) throw new Error("fixture");
+    session.status = "exited";
+    session.exitCode = 4;
+    await vi.advanceTimersByTimeAsync(FAST_REFRESH_MS);
+    expect(ids()).toEqual(["term_1"]);
+    answer();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(store.getView().rows[0]?.terminal.exitCode).toBe(4);
+  });
+
+  it("LIST-13: an environment that cannot be listed shows its error and still counts as loaded", async () => {
+    const w = world({
+      environments: [
+        ...world().environments,
+        {
+          id: "env_off",
+          projectId: "proj_1",
+          name: "offline box",
+          branchName: null,
+          path: "/srv/x",
+          hostId: "host_2",
+          status: "ready",
+        },
+      ],
+    });
+    const { sdk, store } = open(w, ALL);
+    const real = sdk.terminals.list.getMockImplementation();
+    sdk.terminals.list.mockImplementation(async (args) => {
+      if (args.scope.kind === "environment" && args.scope.environmentId === "env_off") {
+        throw new Error("host offline");
+      }
+      return real?.(args) as never;
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    const off = store.getView().sections.find((section) => section.environment.id === "env_off");
+    expect(off?.loaded).toBe(true);
+    expect(off?.error).toBe("host offline");
+  });
+
+  it("ACT-6: a terminal closed here does not come back from a refresh that started before the close", async () => {
+    const w = world({ terminals: [terminal({ id: "term_1" })] });
+    const { sdk, store, ids } = open(w, "env_a");
+    await vi.advanceTimersByTimeAsync(0);
+    let release!: () => void;
+    sdk.terminals.list.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          release = () => resolve({ sessions: [terminal({ id: "term_1" })] });
+        }),
+    );
+    await vi.advanceTimersByTimeAsync(FAST_REFRESH_MS);
+    await store.close("term_1");
+    release();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(ids()).toEqual([]);
+    expect(store.getView().running).toBe(0);
+  });
+
+  it("LIST-8: keeps refreshing when React mounts the page twice (StrictMode)", async () => {
+    const w = world();
+    const { store, ids } = open(w, "env_a");
+    store.dispose();
+    store.start();
+    await vi.advanceTimersByTimeAsync(0);
+    w.terminals.push(terminal({ id: "term_late" }));
+    await vi.advanceTimersByTimeAsync(FAST_REFRESH_MS);
+    expect(ids()).toEqual(["term_late"]);
+  });
 });

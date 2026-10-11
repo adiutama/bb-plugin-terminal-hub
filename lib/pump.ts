@@ -260,6 +260,9 @@ export class TerminalPump {
       if (this.visible && (this.wantsFocus || this.focused)) {
         this.wantsFocus = true;
         this.focus();
+        // Wterm's init already focused its input (ignored above), so focus()
+        // fires no event: read the outcome instead.
+        this.syncFocus();
       } else {
         this.blur();
         this.focused = false;
@@ -579,6 +582,10 @@ export class TerminalPump {
     this.resizeTimer = null;
   }
 
+  private syncFocus(): void {
+    this.setDomFocus(this.options.container.contains(document.activeElement));
+  }
+
   private setDomFocus(focused: boolean): void {
     if (this.initializing || this.disposed || this.focused === focused) return;
     this.focused = focused;
@@ -740,6 +747,10 @@ export class TerminalPump {
     if (this.visible === visible) return;
     this.visible = visible;
     if (visible) {
+      if (this.wantsFocus && this.terminal) {
+        this.terminal.focus();
+        this.syncFocus();
+      }
       this.fit();
       if (!this.started) this.start();
       this.interval = FAST_INTERVAL;
