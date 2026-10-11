@@ -1,8 +1,8 @@
 # Session list
 
-- Status: implemented
+- Status: agreed
 - Prefix: LIST
-- Decisions: 202610100901, 202610100902, 202610100904, 202610100911, 202610110125
+- Decisions: 202610100901, 202610100902, 202610100904, 202610100911, 202610110125, 202610110156
 
 The left column of the Terminals page: every terminal in one environment, or
 in every environment of the project, grouped by who owns it, so the user can find what is running and spot what was
@@ -14,6 +14,7 @@ left behind.
 [ project      ▾ ]
 [ environment  ▾ ]
 [ + New terminal │ ▾ ]
+[ Filter terminals, environments, threads…  / ]
 3 running · 1 server · 1 stale
 ─────────────────────
 Environment
@@ -34,6 +35,7 @@ environment order.
 [ project          ▾ ]
 [ All environments ▾ ]
 [ + New terminal │ ▾ ]
+[ Filter terminals, environments, threads…  / ]
 3 running · 1 server · 1 stale
 ─────────────────────
 ▾ main                    1 running
@@ -49,6 +51,23 @@ environment order.
 "New terminal" starts a shell in the selected environment; its ▾ opens a
 "New terminal in…" menu of the project's environments, the selected one first. Until the first scan of the project's threads finishes, the list
 says "Scanning threads… 12 of 80" instead of claiming nothing is running.
+
+Typing in the filter narrows the list to the rows that match, and lists the
+empty environments whose name matches, so a shell can be started there.
+Typing `3000` finds the dev server; `kai flaky` finds terminals of threads
+about flaky tests in the `kai` worktrees.
+
+```
+[ 3000                                       ]
+3 running · 1 server · 1 stale
+─────────────────────
+▾ main                    1 running
+    Environment
+      ● dev server   :3000
+```
+
+`/` jumps to the filter, ↓ and ↑ move through the rows, Enter opens one, and
+Escape clears the filter.
 
 The list is built from two kinds of SDK calls, because an environment-scoped
 list does not include thread terminals
@@ -76,3 +95,9 @@ the environment, archived ones included
 - **LIST-15** Clicking an environment's section header selects that environment. (ADR 202610110125)
 - **LIST-16** A summary line at the top of the list reads "N running · N servers · N stale" for the selected environment, or the whole project with "All environments" selected. Servers are running terminals with a server hint (LIST-7); stale terminals are as in LIST-4. The server and stale parts are left out when zero. Clicking the stale part opens the "Close all from settled threads" confirmation (ACT-5). (ADR 202610110125)
 - **LIST-17** With "All environments" selected, the list is complete once the project's environments were listed, the first full scan of its threads (LIST-14) succeeded, and every environment's own terminals were listed or failed to list (a failure shows on its section). Until then the list shows the scan's progress, as threads scanned out of the total once the total is known, and never the empty-environment disclosure or "No terminals found". If the scan fails, the list shows the error, keeps the rows it has, and the next scan tries again. (ADR 202610110125)
+- **LIST-18** A filter box sits at the top of the list, above the summary line, with the placeholder "Filter terminals, environments, threads…". Empty or whitespace-only text is no filter. Otherwise the list shows only the rows that match, and leaves out group headings with no matching rows. A row matches when every whitespace-separated word of the filter appears, ignoring case, in at least one of: the terminal's title, its environment's name, its thread's title, its starting directory (as shown, or in full), or its server hint's label or address (LIST-7). The selected terminal's row is hidden like any other that does not match; the terminal stays selected and its view stays open. (ADR 202610110156)
+- **LIST-19** With "All environments" selected and a filter, a section is shown only when it has matching rows or failed to list (showing its error); this replaces LIST-13's reasons, including holding the selected terminal. Shown sections are expanded whatever their collapsed state, without their collapse toggle. Once the list is complete (LIST-17), the empty-environment disclosure is replaced by the empty environments whose name matches every word of the filter, as headers under "Empty environments" that select the environment when clicked (LIST-15); until then the list shows the scan's progress as in LIST-17 and lists no empty environments. Clearing the filter restores the collapsed sections and the disclosure as they were. (ADR 202610110156)
+- **LIST-20** When no row matches, the list says "No terminals match “…”.", followed by any empty environments listed under LIST-19. With "All environments" selected it says so only once the list is complete (LIST-17); in a single environment, only once its listing has succeeded, and "Loading terminals…" before then. (ADR 202610110156)
+- **LIST-21** The filter's text lasts while the page stays open: it is kept when the environment changes and cleared when the project changes. The summary line (LIST-16), the title-bar count (NAV-6), and "Close all from settled threads" (ACT-5) ignore it. (ADR 202610110156)
+- **LIST-22** Pressing `/` focuses the filter and selects its text when focus is inside the Terminals page but not in a text field, a terminal view, a menu, or a dialog, no Ctrl, Cmd, or Alt is held, and no input method is composing. Elsewhere `/` is left alone. In the filter, Escape clears the text; with the text already empty, it moves focus to the selected row if shown, else to the first item of the keyboard order (LIST-23), else blurs the filter. ↓ moves focus to the first item of the keyboard order. Enter selects the first row shown, or with none, the first empty environment listed under LIST-19. (ADR 202610110156)
+- **LIST-23** The keyboard order is the rows the list shows, top to bottom, followed by any empty environments listed under LIST-19. With focus on a row's main button or on one of those headers, ↓ and ↑ move focus to the next and previous item without wrapping, ↑ from the first item returns focus to the filter, Home and End move to the first and last item, and Enter or Space selects it. Moving focus does not change the selection. Tab order is unchanged: every row's buttons stay in it, and keys on a row's dismiss and ⋯ buttons keep their own meaning. (ADR 202610110156)
