@@ -1,6 +1,6 @@
 # Session list
 
-- Status: agreed
+- Status: implemented
 - Prefix: LIST
 - Decisions: 202610100901, 202610100902, 202610100904, 202610100911, 202610110324
 
