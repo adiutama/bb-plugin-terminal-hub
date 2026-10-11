@@ -158,6 +158,25 @@ describe("navigation", () => {
     expect(await screen.findByText(/exited with code 2/)).toBeTruthy();
   });
 
+  it("NAV-5: going back to a terminal that exited after a project switch says it is gone", async () => {
+    const w = world({
+      projects: [
+        { id: "proj_1", name: "Project one" },
+        { id: "proj_2", name: "Project two" },
+      ],
+      terminals: [terminal({ id: "t1", title: "one" }), terminal({ id: "t2", title: "two" })],
+    });
+    const page = await mountPage(w, "proj_1/env_a/t1");
+    await screen.findByText("two");
+    page.goTo("proj_2/all");
+    const session = w.terminals[0];
+    if (!session) throw new Error("fixture");
+    session.status = "exited";
+    session.exitCode = 0;
+    page.goTo("proj_1/env_a/t1");
+    expect(await screen.findByText(/That terminal is gone/)).toBeInTheDocument();
+  });
+
   it("NAV-5: a terminal that cannot be reached keeps the link and offers a retry", async () => {
     const w = world();
     const page = await mountPage(w, "proj_1/env_a/term_remote");
