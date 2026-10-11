@@ -1,6 +1,6 @@
 # Keep the list for the session, remember the user's place, and follow bb's signals
 
-- Status: proposed
+- Status: accepted
 - Date: 2026-10-11
 - Supersedes: 202610110324
 - Superseded by: none
