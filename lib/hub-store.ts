@@ -94,8 +94,10 @@ export interface Section {
   environment: EnvironmentInfo;
   grouped: GroupedEnvironment;
   running: number;
-  /** False until this environment's terminals were listed once. */
+  /** False until this environment's terminals were listed (or failed) once. */
   loaded: boolean;
+  /** Why the last listing of this environment failed, if it did. */
+  error: string | null;
 }
 
 export interface HubView {
@@ -116,6 +118,8 @@ export interface HubView {
 interface Retained {
   terminal: TerminalSession;
   thread: ThreadRecord | null;
+  /** Vanished from its list; bb has not yet said whether it exited. */
+  pending: boolean;
 }
 
 export function environmentName(env: EnvironmentRecord): string {
@@ -147,6 +151,9 @@ export class HubStore {
   private hintRequested = new Set<string>();
   private tails = new Map<string, OutputTail>();
   private homes = new Map<string, string | null>();
+  /** Environments whose own terminals were listed at least once, or failed to. */
+  private attempted = new Set<string>();
+  private environmentErrors = new Map<string, string>();
   private error: string | null = null;
   private view: HubView;
   private listeners = new Set<Listener>();
@@ -177,9 +184,11 @@ export class HubStore {
 
   // ── lifecycle ───────────────────────────────────────────────────────────
 
+  /** Starts refreshing. Safe to call again after dispose (React StrictMode). */
   start(): void {
-    if (this.started || this.disposed) return;
+    if (this.started) return;
     this.started = true;
+    this.disposed = false;
     this.unsubscribe = this.sdk.subscribe({
       event: "thread:changed",
       callback: (event) => this.onThreadChanged(event),
@@ -191,12 +200,12 @@ export class HubStore {
 
   dispose(): void {
     this.disposed = true;
+    this.started = false;
     this.clearTimers();
     for (const timer of this.signalTimers.values()) clearTimeout(timer);
     this.signalTimers.clear();
     this.unsubscribe?.();
     document.removeEventListener("visibilitychange", this.onVisibility);
-    this.listeners.clear();
     if (activeStore === this) setActiveHubStore(null);
   }
 
@@ -210,6 +219,8 @@ export class HubStore {
       this.threads.clear();
       this.threadTerminals.clear();
       this.retained.clear();
+      this.attempted.clear();
+      this.environmentErrors.clear();
       this.error = null;
     }
     this.projectId = projectId;
@@ -295,11 +306,12 @@ export class HubStore {
       const snapshot = await loadEnvironment(this.sdk, environmentId);
       if (generation !== this.generation) return;
       this.mergeEnvironment(environmentId, snapshot);
-      this.error = null;
+      this.environmentErrors.delete(environmentId);
     } catch (error) {
       if (generation !== this.generation) return;
-      this.error = message(error);
+      this.environmentErrors.set(environmentId, message(error));
     }
+    this.attempted.add(environmentId);
     this.emit();
   }
 
@@ -310,14 +322,19 @@ export class HubStore {
     const lists = await mapLimited(environments, SCAN_CONCURRENCY, async (env) => {
       try {
         return await listEnvironmentTerminals(this.sdk, env.id);
-      } catch {
-        return null;
+      } catch (error) {
+        return message(error);
       }
     });
     if (generation !== this.generation) return;
     environments.forEach((env, index) => {
       const list = lists[index];
-      if (list) this.replaceEnvironmentTerminals(env.id, list);
+      if (typeof list === "string") this.environmentErrors.set(env.id, list);
+      else if (list) {
+        this.environmentErrors.delete(env.id);
+        this.replaceEnvironmentTerminals(env.id, list);
+      }
+      this.attempted.add(env.id);
     });
     this.emit();
   }
@@ -332,9 +349,11 @@ export class HubStore {
       const threads = await listAllThreads(this.sdk, { projectId });
       const terminals = await scanThreadTerminals(this.sdk, threads);
       if (generation !== this.generation) return;
+      const previous = this.threads;
       this.threads = new Map(threads.map((thread) => [thread.id, thread]));
       for (const id of [...this.threadTerminals.keys()]) {
-        if (!terminals.has(id)) this.replaceThreadTerminals(id, []);
+        // A deleted thread's terminals exit with it; keep its record for their rows.
+        if (!terminals.has(id)) this.replaceThreadTerminals(id, [], previous.get(id) ?? null);
       }
       for (const [id, list] of terminals) this.replaceThreadTerminals(id, list);
       this.error = null;
@@ -397,24 +416,35 @@ export class HubStore {
     for (const [id, thread] of this.threads) {
       if (thread.environmentId === environmentId && !snapshot.threadTerminals.has(id)) {
         this.threads.delete(id);
-        this.replaceThreadTerminals(id, []);
+        this.replaceThreadTerminals(id, [], thread);
       }
     }
     for (const thread of snapshot.threads) this.threads.set(thread.id, thread);
     for (const [id, list] of snapshot.threadTerminals) this.replaceThreadTerminals(id, list);
   }
 
-  private replaceEnvironmentTerminals(environmentId: string, list: TerminalSession[]): void {
+  /** A list that started before a close here can land after it; drop those. */
+  private withoutGone(list: TerminalSession[]): TerminalSession[] {
+    return list.filter((terminal) => !this.gone.has(terminal.id));
+  }
+
+  private replaceEnvironmentTerminals(environmentId: string, incoming: TerminalSession[]): void {
+    const list = this.withoutGone(incoming);
     const previous = this.environmentTerminals.get(environmentId) ?? [];
     this.environmentTerminals.set(environmentId, list);
     this.noticeChanges(previous, list, null);
   }
 
-  private replaceThreadTerminals(threadId: string, list: TerminalSession[]): void {
+  private replaceThreadTerminals(
+    threadId: string,
+    incoming: TerminalSession[],
+    owner: ThreadRecord | null = this.threads.get(threadId) ?? null,
+  ): void {
+    const list = this.withoutGone(incoming);
     const previous = this.threadTerminals.get(threadId) ?? [];
     if (list.length === 0) this.threadTerminals.delete(threadId);
     else this.threadTerminals.set(threadId, list);
-    this.noticeChanges(previous, list, this.threads.get(threadId) ?? null);
+    this.noticeChanges(previous, list, owner);
   }
 
   /** New terminals get a one-time hint read; vanished running ones are checked. */
@@ -425,11 +455,15 @@ export class HubStore {
   ): void {
     const ids = new Set(next.map((terminal) => terminal.id));
     for (const terminal of next) {
+      this.retained.delete(terminal.id);
       this.requestHome(terminal.hostId);
       if (isRunning(terminal)) this.requestHint(terminal.id);
     }
     for (const terminal of previous) {
       if (!ids.has(terminal.id) && isRunning(terminal) && !this.gone.has(terminal.id)) {
+        // Keep the row in place while bb is asked why it went, so a selected
+        // terminal that exits never blinks out of the list (LIST-11, VIEW-7).
+        this.retained.set(terminal.id, { terminal, thread, pending: true });
         void this.checkExited(terminal, thread);
       }
     }
@@ -441,13 +475,19 @@ export class HubStore {
     try {
       const session = await this.sdk.terminals.get({ terminalId: terminal.id });
       if (generation !== this.generation || this.gone.has(terminal.id)) return;
+      if (!this.retained.get(terminal.id)?.pending) return;
       if (session.status === "exited") {
-        this.retained.set(terminal.id, { terminal: session, thread });
-        this.emit();
+        this.retained.set(terminal.id, { terminal: session, thread, pending: false });
+      } else {
+        // Still alive, just not in that list any more: the next listing has it.
+        this.retained.delete(terminal.id);
       }
     } catch {
       // Gone without a trace: nothing to show.
+      if (generation !== this.generation) return;
+      this.retained.delete(terminal.id);
     }
+    this.emit();
   }
 
   /** LIST-7: read a terminal's last 4 KB once, when it first appears. */
@@ -615,7 +655,8 @@ export class HubStore {
         environment: toInfo(env),
         grouped,
         running: runningCount(grouped),
-        loaded: this.environmentTerminals.has(env.id),
+        loaded: this.environmentTerminals.has(env.id) || this.attempted.has(env.id),
+        error: this.environmentErrors.get(env.id) ?? null,
       };
     });
     if (this.environment !== ALL && records.length === 0 && this.environments !== null) {
@@ -625,7 +666,9 @@ export class HubStore {
         environment: { id: this.environment, name: this.environment, path: "", hostId: "" },
         grouped,
         running: runningCount(grouped),
-        loaded: this.environmentTerminals.has(this.environment),
+        loaded:
+          this.environmentTerminals.has(this.environment) || this.attempted.has(this.environment),
+        error: this.environmentErrors.get(this.environment) ?? null,
       });
     }
     const rows = sections.flatMap((section) => orderedRows(section.grouped));

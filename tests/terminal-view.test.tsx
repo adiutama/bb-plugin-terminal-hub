@@ -219,6 +219,17 @@ describe("terminal view", () => {
     expect(resizes(sdk)).toEqual([]);
   });
 
+  it("VIEW-4: a terminal opened with focus (new or restarted) fits the pane at once", async () => {
+    const { sdk } = shell("ready\r\n", { id: "term_1", cols: 120, rows: 32 });
+    showView(sdk, { cols: 120, rows: 32, fresh: true });
+    await waitFor(() => expect(document.body.textContent).toContain("ready"));
+    // 12px font: 15px rows, so 384px holds 25 of them.
+    await waitFor(() => expect(resizes(sdk)).toEqual([[80, 25]]));
+    expect(
+      document.querySelector("[data-renderer=ghostty]")?.contains(document.activeElement),
+    ).toBe(true);
+  });
+
   it("VIEW-8: unfocused, renders at the shell's own columns and rows, whatever the space", async () => {
     const { sdk } = shell("ready\r\n", { id: "term_1", cols: 100, rows: 30 });
     const { pump, container } = pumpOver(sdk, { cols: 100, rows: 30 });

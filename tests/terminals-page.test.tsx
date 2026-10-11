@@ -6,14 +6,26 @@ import { notFound, terminal, thread, world } from "./fixtures/fake-bb";
 import { loadApp, mountPage, openRowMenu, stopFollowing } from "./fixtures/page";
 
 // The real view loads Ghostty's WASM; the page tests only need to know
-// which terminal it was asked to show (the view has its own tests).
-vi.mock("@/components/terminal-view", () => ({
-  TerminalView: ({ terminalId, fresh }: { terminalId: string; fresh?: boolean }) => (
-    <div data-testid="terminal-view" data-fresh={fresh ? "" : undefined}>
-      {terminalId}
-    </div>
-  ),
-}));
+// which terminal it was asked to show, and when (the view has its own tests).
+const mounts = vi.hoisted(() => [] as string[]);
+vi.mock("@/components/terminal-view", async () => {
+  const { useEffect } = await import("react");
+  return {
+    TerminalView: ({ terminalId, fresh }: { terminalId: string; fresh?: boolean }) => {
+      useEffect(() => {
+        mounts.push(`mount ${terminalId}`);
+        return () => {
+          mounts.push(`unmount ${terminalId}`);
+        };
+      }, [terminalId]);
+      return (
+        <div data-testid="terminal-view" data-fresh={fresh ? "" : undefined}>
+          {terminalId}
+        </div>
+      );
+    },
+  };
+});
 
 beforeEach(() => {
   vi.stubGlobal(
@@ -40,6 +52,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  mounts.splice(0);
   stopFollowing();
   cleanup();
   vi.unstubAllGlobals();
@@ -170,6 +183,60 @@ describe("navigation", () => {
     await mountPage(w, "proj_1/all");
     render(<HeaderCount />);
     expect(await screen.findByText("3 running")).toBeTruthy();
+  });
+});
+
+describe("terminal view on the page", () => {
+  it("VIEW-7, LIST-11: a selected terminal that exits stays selected and mounted, even when bb answers slowly", async () => {
+    const w = world({
+      threads: [thread({ id: "thr_1" })],
+      terminals: [terminal({ id: "term_1", title: "dev", threadId: "thr_1" })],
+    });
+    const page = await mountPage(w, "proj_1/env_a/term_1");
+    await screen.findByTestId("terminal-view");
+    const real = page.sdk.terminals.get.getMockImplementation();
+    page.sdk.terminals.get.mockImplementation(async (args) => {
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      return real?.(args) as never;
+    });
+    const session = w.terminals[0];
+    if (!session) throw new Error("fixture");
+    session.status = "exited";
+    session.exitCode = 3;
+    page.emitThreadChanged({ id: "thr_1", changes: ["terminals-changed"] });
+    expect(await screen.findByText("exit 3")).toBeInTheDocument();
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(page.subPath()).toBe("proj_1/env_a/term_1");
+    expect(screen.queryByText(/That terminal is gone/)).toBeNull();
+    expect(mounts).toEqual(["mount term_1"]);
+  });
+
+  it("VIEW-5: answers a new shell's startup queries on its first view only", async () => {
+    const w = world({ terminals: [terminal({ id: "t_old", title: "old" })] });
+    const page = await mountPage(w, "proj_1/env_a");
+    fireEvent.click(await screen.findByRole("button", { name: "New terminal" }));
+    expect(await screen.findByTestId("terminal-view")).toHaveAttribute("data-fresh");
+    fireEvent.click(await screen.findByText("old"));
+    await waitFor(() => expect(page.subPath()).toBe("proj_1/env_a/t_old"));
+    fireEvent.click(await screen.findByText("zsh"));
+    await waitFor(() => expect(page.subPath()).toBe("proj_1/env_a/term_new_1"));
+    expect(await screen.findByTestId("terminal-view")).not.toHaveAttribute("data-fresh");
+  });
+
+  it("NAV-5: resolves a dead link even when one environment cannot be listed", async () => {
+    const w = twoEnvironments();
+    const page = await mountPage(w, "proj_1/all/term_gone");
+    const real = page.sdk.terminals.list.getMockImplementation();
+    page.sdk.terminals.list.mockImplementation(async (args) => {
+      if (args.scope.kind === "environment" && args.scope.environmentId === "env_b") {
+        throw new Error("host offline");
+      }
+      return real?.(args) as never;
+    });
+    expect(await screen.findByText(/That terminal is gone/)).toBeInTheDocument();
+    expect(
+      await screen.findByText("Could not list this environment's terminals: host offline"),
+    ).toBeInTheDocument();
   });
 });
 
