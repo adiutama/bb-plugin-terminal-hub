@@ -1,5 +1,5 @@
-// Above the list: the New terminal split button and the summary line.
-import { useState } from "react";
+// Above the list: the New terminal split button, the filter, and the summary line.
+import { type RefObject, useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -10,8 +10,10 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Icon } from "@/components/ui/icon";
+import { Input } from "@/components/ui/input";
 import { menuEnvironments, type Summary } from "@/lib/all-view";
 import type { EnvironmentInfo } from "@/lib/hub-store";
+import { navItems } from "@/lib/keyboard";
 
 /**
  * LIST-9: the main part starts a shell in `targetId`, or opens the menu when
@@ -108,5 +110,83 @@ export function SummaryLine({ summary, onStale }: { summary: Summary; onStale: (
         </>
       ) : null}
     </section>
+  );
+}
+
+/**
+ * LIST-18, LIST-22: the filter. Escape clears it, then leaves it for the
+ * list; ↓ enters the list; Enter opens the first item shown.
+ */
+export function FilterBox({
+  value,
+  onChange,
+  inputRef,
+  listRef,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  inputRef: RefObject<HTMLInputElement | null>;
+  listRef: RefObject<HTMLElement | null>;
+}) {
+  return (
+    <div className="relative flex items-center">
+      <Icon
+        name="Search"
+        className="pointer-events-none absolute left-2 size-3.5 text-muted-foreground"
+        aria-hidden="true"
+      />
+      <Input
+        ref={inputRef}
+        value={value}
+        placeholder="Filter terminals, environments, threads…"
+        aria-label="Filter terminals"
+        aria-keyshortcuts="/"
+        spellCheck={false}
+        autoCapitalize="off"
+        autoCorrect="off"
+        className="h-8 pl-7 pr-7 text-sm"
+        onChange={(event) => onChange(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.nativeEvent.isComposing) return;
+          const items = navItems(listRef.current);
+          if (event.key === "Escape") {
+            event.preventDefault();
+            event.stopPropagation();
+            if (value !== "") onChange("");
+            else {
+              const current = items.find((item) => item.getAttribute("aria-current") === "true");
+              const next = current ?? items[0];
+              if (next) next.focus();
+              else event.currentTarget.blur();
+            }
+          } else if (event.key === "ArrowDown") {
+            event.preventDefault();
+            items[0]?.focus();
+          } else if (event.key === "Enter") {
+            event.preventDefault();
+            items[0]?.click();
+          }
+        }}
+      />
+      {value !== "" ? (
+        <button
+          type="button"
+          aria-label="Clear filter"
+          className="absolute right-2 text-muted-foreground hover:text-foreground"
+          onClick={() => {
+            onChange("");
+            inputRef.current?.focus();
+          }}
+        >
+          <Icon name="X" className="size-3.5" aria-hidden="true" />
+        </button>
+      ) : (
+        <span aria-hidden="true" className="pointer-events-none absolute right-2">
+          <kbd className="rounded border border-border px-1 font-mono text-[10px] text-muted-foreground">
+            /
+          </kbd>
+        </span>
+      )}
+    </div>
   );
 }

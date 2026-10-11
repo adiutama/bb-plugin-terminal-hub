@@ -1,7 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
   environmentOf,
+  type FilterContext,
+  filterAll,
+  filteredOrder,
+  filterSection,
+  filterWords,
   menuEnvironments,
+  rowMatches,
   splitSections,
   summarize,
   visibleOrder,
@@ -89,5 +95,82 @@ describe("all view", () => {
       ["old", { url: "http://localhost:4000", label: ":4000" }],
     ]);
     expect(summarize(rows, hints)).toEqual({ running: 2, servers: 1, stale: 1 });
+  });
+
+  describe("filter", () => {
+    const filterBy = (text: string): FilterContext => ({
+      words: filterWords(text),
+      hints: new Map([["web", { label: ":3000", url: "http://localhost:3000/" }]]),
+      homes: new Map([["host_1", "/Users/me"]]),
+    });
+    const kai = () =>
+      section("kai-flaky", [
+        terminal({ id: "web", title: "dev server", initialCwd: "/Users/me/kai" }),
+        terminal({ id: "test", title: "pnpm test", threadId: "thr_kai-flaky" }),
+      ]);
+    const ids = (s: Section) =>
+      [...s.grouped.environment, ...s.grouped.threads.flatMap((g) => g.rows)].map(
+        (row) => row.terminal.id,
+      );
+
+    it("LIST-18: blank text is no filter", () => {
+      expect(filterWords("   ")).toEqual([]);
+      expect(filterWords("  Dev   SERVER ")).toEqual(["dev", "server"]);
+    });
+
+    it("LIST-18: matches title, environment, thread, directory as shown or in full, and server hint, ignoring case", () => {
+      const s = kai();
+      const [web] = s.grouped.environment;
+      const [test] = s.grouped.threads[0]?.rows ?? [];
+      if (!web || !test) throw new Error("fixture");
+      const match = (row: typeof web, text: string) =>
+        rowMatches(row, s.environment.name, filterBy(text));
+      expect(match(web, "DEV")).toBe(true);
+      expect(match(web, "kai-flaky")).toBe(true);
+      expect(match(test, "thread thr_kai")).toBe(true);
+      expect(match(web, "~/kai")).toBe(true);
+      expect(match(web, "/users/me/kai")).toBe(true);
+      expect(match(web, "3000")).toBe(true);
+      expect(match(web, "localhost:3000")).toBe(true);
+      expect(match(test, "3000")).toBe(false);
+    });
+
+    it("LIST-18: every word must match, each in any field", () => {
+      const [web] = kai().grouped.environment;
+      if (!web) throw new Error("fixture");
+      expect(rowMatches(web, "kai-flaky", filterBy("flaky 3000"))).toBe(true);
+      expect(rowMatches(web, "kai-flaky", filterBy("flaky 5173"))).toBe(false);
+    });
+
+    it("LIST-18: a section keeps only matching rows and drops empty thread groups", () => {
+      const filtered = filterSection(kai(), filterBy("dev"));
+      expect(ids(filtered)).toEqual(["web"]);
+      expect(filtered.grouped.threads).toEqual([]);
+    });
+
+    it("LIST-19: shows sections with matches or errors, and empty environments by name once complete", () => {
+      const sections = [
+        section("idle-kai"),
+        kai(),
+        section("other", [terminal({ id: "o", title: "zsh" })]),
+        section("failed", [], { error: "host offline" }),
+        section("idle-web"),
+      ];
+      const { shown, emptyMatches } = filterAll(sections, filterBy("kai"), true);
+      expect(shown.map((s) => s.environment.id)).toEqual(["kai-flaky", "failed"]);
+      expect(emptyMatches.map((s) => s.environment.id)).toEqual(["idle-kai"]);
+      expect(filterAll(sections, filterBy("idle kai"), true).emptyMatches).toHaveLength(1);
+      expect(filterAll(sections, filterBy("kai"), false).emptyMatches).toEqual([]);
+    });
+
+    it("ACT-7: with a filter, the order keeps the selected terminal as an anchor between visible rows", () => {
+      const sections = [
+        section("a", [terminal({ id: "a1", title: "dev" }), terminal({ id: "a2", title: "zsh" })]),
+        section("b", [terminal({ id: "b1", title: "zsh" }), terminal({ id: "b2", title: "dev" })]),
+      ];
+      const { shown } = filterAll(sections, filterBy("dev"), true);
+      expect(filteredOrder(sections, shown, "a2")).toEqual(["a1", "a2", "b2"]);
+      expect(filteredOrder(sections, shown, null)).toEqual(["a1", "b2"]);
+    });
   });
 });
