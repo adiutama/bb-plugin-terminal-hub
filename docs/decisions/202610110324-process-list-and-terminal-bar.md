@@ -1,9 +1,9 @@
 # Show the list as a process list, and give the terminal a bar of its own
 
-- Status: accepted
+- Status: superseded
 - Date: 2026-10-11
 - Supersedes: 202610110125, 202610110156
-- Superseded by: none
+- Superseded by: 202610111227
 - Applies to: docs/specs/session-list.md, docs/specs/actions.md, docs/specs/terminal-view.md, docs/specs/navigation.md, components/list-header.tsx, components/session-list.tsx, components/session-row.tsx, components/terminals-page.tsx, components/terminal-bar.tsx, components/empty-pane.tsx, lib/all-view.ts, lib/keyboard.ts, README.md
 
 ## Context
