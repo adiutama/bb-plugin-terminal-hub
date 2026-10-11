@@ -21,8 +21,18 @@ bb builds the page on install. A **Terminals** entry appears in the rail.
 ## Use
 
 Open **Terminals** from the rail. Pick a project, then an environment (a
-checkout or worktree), or keep **All environments** to see every environment
-in the project at once. The title bar shows how many terminals are running.
+checkout or worktree), or keep **All environments** to see the whole project
+at once. The title bar shows how many terminals are running, and a line above
+the list sums up what is running, how many are serving a local address, and
+how many are stale (click it to clean them up).
+
+- **All environments** shows a section only for environments that have
+  terminals, running or just exited. The empty ones wait behind **Show N empty
+  environments** at the bottom. Until the first scan of the project's threads
+  finishes, the list shows its progress.
+- **New terminal** starts a shell in the selected environment (in All, the
+  selected terminal's). Its **▾** menu starts one in any environment of the
+  project, including the empty ones.
 
 - **Environment** lists the environment's own terminals: the ones you start
   here with **New terminal**, and the ones agents start for long-running

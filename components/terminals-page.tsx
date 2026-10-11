@@ -9,6 +9,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { toast } from "sonner";
 import { ConfirmDialog, RenameDialog } from "@/components/dialogs";
+import { NewTerminalButton, SummaryLine } from "@/components/list-header";
 import { SessionList } from "@/components/session-list";
 import type { RowActions } from "@/components/session-row";
 import { TerminalView } from "@/components/terminal-view";
@@ -23,6 +24,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { nextSelection, renameTerminal, restartTerminal, settledTargets } from "@/lib/actions";
+import { environmentOf, splitSections, summarize, visibleOrder } from "@/lib/all-view";
 import { isNotFound } from "@/lib/errors";
 import { type HubSdk, HubStore, setActiveHubStore } from "@/lib/hub-store";
 import type { HubRow, TerminalSession } from "@/lib/inventory";
@@ -156,7 +158,21 @@ export function TerminalsPage({ subPath }: PluginNavPanelProps) {
   const [busy, setBusy] = useState(false);
   const [creating, setCreating] = useState<string | null>(null);
 
-  const order = view.rows.map((row) => row.terminal.id);
+  // LIST-13: section state lasts for this visit to the page only.
+  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set());
+  const [showEmpty, setShowEmpty] = useState(false);
+  const all = route.environment === ALL;
+  // The selected environment: the route's, or in All the selected terminal's.
+  const selectedEnvironment = all
+    ? (environmentOf(view.sections, selectedId) ?? selectedSession?.environmentId ?? null)
+    : route.environment;
+  const { shown, empty } = all
+    ? splitSections(view.sections, selectedEnvironment)
+    : { shown: view.sections, empty: [] };
+  // ACT-7: the next selection follows what the list shows.
+  const order = all
+    ? visibleOrder(shown, collapsed, selectedId)
+    : view.rows.map((row) => row.terminal.id);
 
   const doClose = async (row: HubRow) => {
     setBusy(true);
@@ -197,7 +213,8 @@ export function TerminalsPage({ subPath }: PluginNavPanelProps) {
     },
   };
 
-  // LIST-9: an interactive shell at environment scope, selected.
+  // LIST-9: an interactive shell at environment scope, selected. From a single
+  // environment, starting one in another switches the list there.
   const newTerminal = async (environmentId: string) => {
     setCreating(environmentId);
     try {
@@ -208,7 +225,8 @@ export function TerminalsPage({ subPath }: PluginNavPanelProps) {
       });
       fresh.current.add(session.id);
       store.upsert(session);
-      select(session.id);
+      setMissing(null);
+      go({ ...route, environment: all ? ALL : environmentId, terminalId: session.id }, false);
     } catch (error) {
       toast.error(`Could not start a terminal: ${message(error)}`);
     } finally {
@@ -285,6 +303,16 @@ export function TerminalsPage({ subPath }: PluginNavPanelProps) {
               ))}
             </SelectContent>
           </Select>
+          <NewTerminalButton
+            environments={environmentOptions}
+            targetId={selectedEnvironment}
+            creating={creating}
+            onCreate={(environmentId) => void newTerminal(environmentId)}
+          />
+          <SummaryLine
+            summary={summarize(view.rows, view.hints)}
+            onStale={() => setBulk(settled)}
+          />
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto p-1">
           {missing?.kind === "gone" ? (
@@ -316,8 +344,18 @@ export function TerminalsPage({ subPath }: PluginNavPanelProps) {
             selectedId={selectedId}
             now={now}
             actions={actions}
-            creating={creating}
-            onNewTerminal={(environmentId) => void newTerminal(environmentId)}
+            shown={shown}
+            empty={empty}
+            collapsed={collapsed}
+            showEmpty={showEmpty}
+            onToggleSection={(environmentId) =>
+              setCollapsed((current) => {
+                const next = new Set(current);
+                if (!next.delete(environmentId)) next.add(environmentId);
+                return next;
+              })
+            }
+            onToggleEmpty={() => setShowEmpty((current) => !current)}
             onSelectEnvironment={(environment) =>
               go({ ...route, environment, terminalId: null }, true)
             }
@@ -360,9 +398,13 @@ export function TerminalsPage({ subPath }: PluginNavPanelProps) {
           </div>
         ) : (
           <div className="m-auto max-w-sm text-center text-sm text-muted-foreground">
-            {view.rows.length === 0
-              ? "No terminals running here. Start one with New terminal."
-              : "Select a terminal to see it here."}
+            {view.rows.length > 0
+              ? "Select a terminal to see it here."
+              : view.complete
+                ? "No terminals found. Start one with New terminal in…"
+                : view.error
+                  ? "Could not list every terminal yet; trying again shortly."
+                  : "Looking for terminals…"}
           </div>
         )}
       </main>
