@@ -1,8 +1,8 @@
 # Session list
 
-- Status: implemented
+- Status: agreed
 - Prefix: LIST
-- Decisions: 202610100901, 202610100902, 202610100904, 202610100911, 202610101721
+- Decisions: 202610100901, 202610100902, 202610100904, 202610100911, 202610110125
 
 The left column of the Terminals page: every terminal in one environment, or
 in every environment of the project, grouped by who owns it, so the user can find what is running and spot what was
@@ -13,6 +13,8 @@ left behind.
 ```
 [ project      ▾ ]
 [ environment  ▾ ]
+[ + New terminal │ ▾ ]
+3 running · 1 server · 1 stale
 ─────────────────────
 Environment
   ● dev server   :3000
@@ -22,8 +24,31 @@ From threads
     "Fix flaky tests" · idle
   ○ build   exit 1
     "Release prep" · archived
-[ + New terminal ]
 ```
+
+With "All environments" selected, only environments that have something to
+show get a section; the rest wait behind one disclosure. Sections keep BB's
+environment order.
+
+```
+[ project          ▾ ]
+[ All environments ▾ ]
+[ + New terminal │ ▾ ]
+3 running · 1 server · 1 stale
+─────────────────────
+▾ main                    1 running
+    Environment
+      ● dev server   :3000
+▾ fix-flaky-tests         2 running
+    From threads
+      ● pnpm test          ⚠ thread idle 2h
+      ○ build   exit 1
+▸ Show 37 empty environments
+```
+
+"New terminal" starts a shell in the selected environment; its ▾ opens a
+"New terminal in…" menu of the project's environments, the selected one first. Until the first scan of the project's threads finishes, the list
+says "Scanning threads… 12 of 80" instead of claiming nothing is running.
 
 The list is built from two kinds of SDK calls, because an environment-scoped
 list does not include thread terminals
@@ -43,10 +68,11 @@ the environment, archived ones included
 - **LIST-6** Each row shows the terminal's title and its starting directory, with the home directory shortened to `~`. (ADR 202610100904)
 - **LIST-7** When recent output contains a local server address (`http://localhost:<port>`, `http://127.0.0.1:<port>`, or a `Local:` line), the row shows it as a server hint. The hint is read from the last 4 KB of output when the terminal first appears in the list, and updated while the terminal is viewed; hidden terminals are not re-read. (ADR 202610100904)
 - **LIST-8** The list refreshes when BB signals that a thread changed (including `terminals-changed`), and every 5 seconds while the page is visible, so terminals created or closed elsewhere appear without a reload. (ADR 202610100911)
-- **LIST-9** "New terminal" creates an interactive shell at environment scope in the selected environment and selects it. (ADR 202610100901)
-- **LIST-10** An environment with no terminals shows an empty state with the "New terminal" button.
+- **LIST-9** "New terminal" is a split button. Its main part creates an interactive shell at environment scope in the selected environment and selects it; with "All environments" selected, that is the selected terminal's environment, and with no terminal selected the main part opens the menu instead. Its ▾ part opens the "New terminal in…" menu of the project's environments: the selected environment first (with "All environments" selected, the selected terminal's environment, if any), then the rest in BB's order. Choosing one creates a shell there the same way. With "All environments" selected the view stays on All; with a single environment selected and another one chosen, the view switches to the chosen environment. (ADR 202610100901) (ADR 202610110125)
+- **LIST-10** A single environment with no terminals says so once its listing has succeeded, and says it is loading before then. With nothing listed anywhere, the main pane says "No terminals found. Start one with New terminal in…", but only once the listing has succeeded (with "All environments" selected, once the list is complete under LIST-17). (ADR 202610110125)
 - **LIST-12** Under "Environment", terminals are in creation order, oldest first. Under "From threads", terminals are grouped by thread, threads ordered by most recent activity, and each thread's terminals in creation order.
-- **LIST-13** With "All environments" selected, the list shows every environment in the project as a collapsible section headed by its name and running count, each containing that environment's "Environment" and "From threads" groups. Sections with no terminals are collapsed. (ADR 202610101721)
-- **LIST-14** With "All environments" selected, environment-scoped terminals refresh every 5 seconds; all threads' terminals are rescanned when the view opens and every 30 seconds; and a thread's terminals are refreshed at once when BB signals that they changed. (ADR 202610101721)
-- **LIST-15** Clicking an environment's section header selects that environment. (ADR 202610101721)
-
+- **LIST-13** With "All environments" selected, the list shows a collapsible section, headed by its name and running count, for each environment that has terminals (running, or exited rows kept by LIST-11), could not be listed, or holds the selected terminal. Sections start expanded, keep BB's environment order, and each contains that environment's "Environment" and "From threads" groups. Once the list is complete (LIST-17), the other environments are hidden behind one disclosure at the bottom, "Show N empty environments" (left out when N is zero), which shows them as compact headers and then reads "Hide empty environments". The page remembers the choice only until the user leaves it. (ADR 202610110125)
+- **LIST-14** With "All environments" selected, environment-scoped terminals refresh every 5 seconds; all threads' terminals are rescanned when the view opens and every 30 seconds; and a thread's terminals are refreshed at once when BB signals that they changed. (ADR 202610110125)
+- **LIST-15** Clicking an environment's section header selects that environment. (ADR 202610110125)
+- **LIST-16** A summary line at the top of the list reads "N running · N servers · N stale" for the selected environment, or the whole project with "All environments" selected. Servers are running terminals with a server hint (LIST-7); stale terminals are as in LIST-4. The server and stale parts are left out when zero. Clicking the stale part opens the "Close all from settled threads" confirmation (ACT-5). (ADR 202610110125)
+- **LIST-17** With "All environments" selected, the list is complete once the project's environments were listed, the first full scan of its threads (LIST-14) succeeded, and every environment's own terminals were listed or failed to list (a failure shows on its section). Until then the list shows the scan's progress, as threads scanned out of the total once the total is known, and never the empty-environment disclosure or "No terminals found". If the scan fails, the list shows the error, keeps the rows it has, and the next scan tries again. (ADR 202610110125)
