@@ -80,6 +80,39 @@ describe("actions", () => {
     ]);
   });
 
+  it("ACT-5: checks each confirmed terminal again and leaves the ones no longer stale", async () => {
+    const w = world({
+      threads: [thread({ id: "thr_idle" }), thread({ id: "thr_busy", status: "active" })],
+      terminals: [
+        terminal({ id: "still", threadId: "thr_idle" }),
+        terminal({ id: "exited", threadId: "thr_idle", status: "exited", exitCode: 0 }),
+        terminal({ id: "woke", threadId: "thr_busy" }),
+        terminal({ id: "unknown", threadId: "thr_idle" }),
+      ],
+    });
+    const { sdk } = fakeSdk(w);
+    const real = sdk.terminals.get.getMockImplementation();
+    sdk.terminals.get.mockImplementation(async (args) => {
+      if (args.terminalId === "unknown") throw new Error("host offline");
+      return real?.(args) as never;
+    });
+    const result = await closeAll(sdk, [
+      row({ id: "still" }, { id: "thr_idle" }),
+      row({ id: "exited" }, { id: "thr_idle" }),
+      row({ id: "woke" }, { id: "thr_busy" }),
+      row({ id: "gone" }, { id: "thr_idle" }),
+      row({ id: "unknown" }, { id: "thr_idle" }),
+    ]);
+    expect(result.closed).toEqual(["still"]);
+    expect(result.skipped.map((r) => r.terminal.id).sort()).toEqual(["exited", "gone", "woke"]);
+    expect(result.failed.map((f) => [f.row.terminal.id, f.message])).toEqual([
+      ["unknown", "host offline"],
+    ]);
+    expect(sdk.terminals.close).toHaveBeenCalledTimes(1);
+    // Each running target's thread is asked after its terminal, right before closing.
+    expect(sdk.threads.get).toHaveBeenCalledTimes(2);
+  });
+
   it("ACT-6: closes in force mode and fails when the terminal is still running", async () => {
     const w = world({ terminals: [terminal({ id: "t1", title: "dev" })] });
     const { sdk } = fakeSdk(w);

@@ -19,7 +19,7 @@ directly through `useSdk()`. There is no plugin RPC: the hub stores nothing
 
 ```
 useSdk()  ──► lib/inventory.ts ──► lib/hub-store.ts ──► session list, header count
-              (list + group)        (one shared store)
+              (list + group)        (one store per project, for the app session)
 useSdk().terminals ◄──► lib/terminal-transport.ts ◄──► lib/pump.ts ◄──► Wterm + Ghostty WASM
 ```
 
@@ -34,23 +34,31 @@ useSdk().terminals ◄──► lib/terminal-transport.ts ◄──► lib/pump.
 | File | Role |
 | --- | --- |
 | `lib/inventory.ts` | Lists an environment's terminals and its threads' (archived included); groups, orders, and marks stale rows. |
-| `lib/hub-store.ts` | The page's data: refresh cadence per view, exited-row retention, server hints, home directories, actions. |
+| `lib/hub-store.ts` | The page's data, one store per project kept for the app session: refresh cadence per view, last-known vs confirmed rows after a return, exited-row retention, server hints, home directories, actions. Also the project list. |
+| `lib/page-memory.ts` | Where the user was, per project, until bb reloads: route, collapsed sections, scroll anchor, filter. |
 | `lib/actions.ts` | Close (force, checked), bulk close, rename, restart, and the next selection after a close. |
 | `lib/route.ts` | `subPath` ⇄ project, environment (or `all`), terminal. |
 | `lib/server-hint.ts`, `lib/paths.ts`, `lib/time.ts` | Row details: server address, `~` paths, "2h". |
 | `lib/terminal-transport.ts` | The pump's reads, writes, and resizes over `useSdk().terminals`. |
 | `lib/cli.ts` | `bb terminal-hub list`: text and JSON over the same inventory. |
 | `components/terminals-page.tsx` | Pickers, list, actions, dialogs, and the selected view; routing. |
-| `components/session-list.tsx`, `components/session-row.tsx` | One environment's groups, or the sections of environments with terminals plus the empty-environment disclosure; one row. |
+| `components/session-list.tsx`, `components/session-row.tsx` | One environment's groups, or the sections of environments with terminals; one row. |
 | `components/list-header.tsx`, `lib/all-view.ts` | The New terminal split button and summary line; which sections show, the order ACT-7 follows, and the summary counts. |
 | `components/terminal-view.tsx` | Hosts one pump with find and the exit/status banner. |
-| `components/header-count.tsx` | The running count in the title bar. |
+| `components/header-count.tsx` | The running count in the title bar, from the store for the URL's project. |
 
 Refresh: a single environment reloads in full every 5 s while the page is
 visible and on bb's `thread:changed` signal for its threads. All environments
 lists each environment's own terminals every 5 s, rescans every thread every
 30 s, and refreshes one thread when bb signals it changed. Hidden tabs do not
 poll.
+
+Return: the page and the title bar take `hubStoreFor(sdk, projectId)` as they
+render. Leaving the page stops the store's timers and forgets what was
+confirmed, keeping the rows; coming back shows them as last known, checks the
+selected terminal, then its environment, then scans. Every write to a list
+carries the sequence number of the request (or action) that produced it, so a
+late answer never replaces newer data.
 
 ## Terminal engine
 

@@ -1,8 +1,17 @@
 // The Terminals page's data: what is listed, kept fresh on its own cadence.
 //
-// One store per open page. The title-bar count (NAV-6) reads the same store
-// through `activeHubStore`, so the header never polls on its own.
-import { type ActionsSdk, type BulkCloseResult, closeAll, closeTerminal } from "./actions";
+// One store per project, kept for the app session (LIST-27): leaving the page
+// stops its refreshes, and coming back shows what it last had while it checks
+// again. The page and the title-bar count (NAV-6) both take the store for the
+// route's project as they render, so one project's rows never show under
+// another's.
+import {
+  type ActionsSdk,
+  type BulkCloseResult,
+  closeAll,
+  closeTerminal,
+  type VerifySdk,
+} from "./actions";
 import { isNotFound } from "./errors";
 import {
   type EnvironmentSnapshot,
@@ -34,6 +43,8 @@ export const FAST_REFRESH_MS = 5_000;
 export const SCAN_REFRESH_MS = 30_000;
 /** Coalesces bursts of thread change signals into one refresh. */
 export const SIGNAL_DEBOUNCE_MS = 250;
+/** LIST-28: how long a return waits for the selected terminal before going on. */
+export const RECONCILE_WAIT_MS = 2_000;
 
 export interface EnvironmentRecord {
   id: string;
@@ -55,7 +66,7 @@ export interface ThreadChangedEvent {
   metadata?: { projectId?: string };
 }
 
-export interface HubSdk extends InventorySdk, ActionsSdk {
+export interface HubSdk extends InventorySdk, ActionsSdk, VerifySdk {
   terminals: {
     get(args: { terminalId: string }): Promise<TerminalSession>;
     output(args: {
@@ -95,7 +106,11 @@ export interface Section {
   environment: EnvironmentInfo;
   grouped: GroupedEnvironment;
   running: number;
-  /** False until this environment's terminals were listed (or failed) once. */
+  /**
+   * LIST-10: this environment's terminals are all known since the page was
+   * opened or returned to, so an empty section means nothing is there; or
+   * its listing failed (see `error`).
+   */
   loaded: boolean;
   /** Why the last listing of this environment failed, if it did. */
   error: string | null;
@@ -108,11 +123,15 @@ export interface ScanProgress {
   total: number | null;
 }
 
+/** LIST-27: whether the rows are current, or kept from before a return. */
+export type Freshness = "live" | "updating" | "reconnecting";
+
 export interface HubView {
-  projectId: string | null;
+  projectId: string;
   environment: string;
-  projects: ProjectRecord[] | null;
   environments: EnvironmentInfo[] | null;
+  /** The environment list was fetched since the page was opened or returned to. */
+  environmentsListed: boolean;
   /** One section for a single environment; every environment for All. */
   sections: Section[];
   /** Every listed row in display order, across sections. */
@@ -122,13 +141,19 @@ export interface HubView {
   homes: ReadonlyMap<string, string | null>;
   error: string | null;
   /**
-   * LIST-10, LIST-17: the listing has succeeded, so an empty list means
-   * nothing is there. In All: the environments, the first thread scan, and
-   * every environment's own list (or its error) are in.
+   * LIST-10, LIST-17, LIST-27: the listing has succeeded since the page was
+   * opened or returned to, so an empty list means nothing is there. In All:
+   * the environments, a full thread scan, and every environment's own list
+   * (or its error) are in.
    */
   complete: boolean;
-  /** LIST-17: the first thread scan, while it runs; null otherwise. */
+  /** LIST-27: rows kept from before a return that are not yet confirmed. */
+  lastKnown: boolean;
+  freshness: Freshness;
+  /** LIST-17: the first thread scan since bb loaded, while it runs; null otherwise. */
   scan: ScanProgress | null;
+  /** NAV-5, LIST-28: listed terminals bb no longer has. */
+  vanished: ReadonlySet<string>;
 }
 
 interface Retained {
@@ -148,13 +173,15 @@ function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+const hidden = () => typeof document !== "undefined" && document.visibilityState === "hidden";
+
 type Listener = () => void;
 
 export class HubStore {
-  private projectId: string | null = null;
   private environment: string = ALL;
-  private generation = 0;
-  private projects: ProjectRecord[] | null = null;
+  private selectedId: string | null = null;
+
+  // ── what is known, kept across visits ──
   private environments: EnvironmentRecord[] | null = null;
   private environmentTerminals = new Map<string, TerminalSession[]>();
   private threads = new Map<string, ThreadRecord>();
@@ -163,37 +190,64 @@ export class HubStore {
   private retained = new Map<string, Retained>();
   /** Closed or dismissed here: never retained or re-shown as exited. */
   private gone = new Set<string>();
+  /** Listed once, then not found by bb: never shown again (NAV-5). */
+  private vanished = new Set<string>();
   /** Exit checks in flight, so a refresh does not start a second one. */
   private checking = new Set<string>();
   private hints = new Map<string, ServerHint>();
   private hintRequested = new Set<string>();
   private tails = new Map<string, OutputTail>();
   private homes = new Map<string, string | null>();
-  /** Environments whose own terminals were listed at least once, or failed to. */
+  /** LIST-17: a full scan of this project has succeeded since bb loaded. */
+  private everScanned = false;
+
+  // ── this visit: reset when the page is left (LIST-27) ──
+  /** Bumped when the page is left, so older requests never confirm anything. */
+  private visit = 0;
+  private attachments = 0;
+  /** The page is showing this store (attached, or just detached in StrictMode). */
+  private live = false;
+  private awayTimer: ReturnType<typeof setTimeout> | null = null;
+  /** This visit began with rows from an earlier one. */
+  private returned = false;
+  /** Scopes confirmed this visit; a later failure does not make them last known again. */
+  private confirmed = new Set<string>();
+  private environmentsListed = false;
+  /** Environments whose own terminals were listed this visit, or failed to. */
   private attempted = new Set<string>();
-  /** Environments whose full listing, thread terminals included, succeeded. */
+  /** Environments whose full listing, thread terminals included, succeeded this visit. */
   private listed = new Set<string>();
   private environmentErrors = new Map<string, string>();
-  /** LIST-17: a full thread scan of this project has succeeded. */
+  /** A full thread scan of this project succeeded this visit. */
   private threadsScanned = false;
-  /** The environments the last successful scan knew of, so their threads are in. */
+  /** The environments that scan knew of, so their threads are in. */
   private scannedEnvironments = new Set<string>();
   private scanProgress: ScanProgress | null = null;
-  /** Bumped per scan, so a finished scan's late callbacks are ignored. */
+  /** Why the environment list or the full scan last failed, this visit. */
+  private environmentsError: string | null = null;
+  private scanError: string | null = null;
+  /** A return found the tab hidden: run its sequence once shown (LIST-28). */
+  private returnPending = false;
+
+  /** Bumped per scan, so a superseded scan's results are ignored. */
   private scanAttempt = 0;
-  private scanning: { generation: number; promise: Promise<void> } | null = null;
-  private error: string | null = null;
-  private view: HubView;
+  private scanning: { visit: number; promise: Promise<boolean> } | null = null;
+
+  // ── ordering: a result never overwrites what a later request or action wrote ──
+  private clock = 0;
+  private revisions = new Map<string, number>();
+
+  private version = 0;
+  private views = new Map<string, { version: number; view: HubView }>();
   private listeners = new Set<Listener>();
   private timers: ReturnType<typeof setTimeout>[] = [];
   private signalTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private unsubscribe: (() => void) | null = null;
-  private started = false;
-  private disposed = false;
 
-  constructor(private readonly sdk: HubSdk) {
-    this.view = this.computeView();
-  }
+  constructor(
+    private readonly sdk: HubSdk,
+    readonly projectId: string,
+  ) {}
 
   // ── subscription ────────────────────────────────────────────────────────
 
@@ -202,68 +256,155 @@ export class HubStore {
     return () => this.listeners.delete(listener);
   };
 
-  getView = (): HubView => this.view;
+  /** What the list shows for `environment` (an id, or `all`). Stable between changes. */
+  viewFor(environment: string): HubView {
+    const cached = this.views.get(environment);
+    if (cached && cached.version === this.version) return cached.view;
+    const view = this.computeView(environment);
+    this.views.set(environment, { version: this.version, view });
+    return view;
+  }
+
+  /** The view for the environment the page last selected. */
+  getView = (): HubView => this.viewFor(this.environment);
 
   private emit(): void {
-    if (this.disposed) return;
-    this.view = this.computeView();
+    this.version++;
+    if (this.live) {
+      // Once confirmed, a scope stays confirmed for the rest of the visit.
+      const env = this.environment;
+      if (!this.confirmed.has(env) && this.isConfirmed(env)) this.confirmed.add(env);
+    }
     for (const listener of this.listeners) listener();
   }
 
   // ── lifecycle ───────────────────────────────────────────────────────────
 
-  /** Starts refreshing. Safe to call again after dispose (React StrictMode). */
-  start(): void {
-    if (this.started) return;
-    this.started = true;
-    this.disposed = false;
+  /**
+   * The page shows this store, for `environment` with `selectedId` selected.
+   * Returns the detach function. Detaching and attaching again in the same
+   * tick (React StrictMode) is not a return.
+   */
+  attach(environment: string, selectedId: string | null): () => void {
+    this.attachments++;
+    if (this.awayTimer !== null) {
+      clearTimeout(this.awayTimer);
+      this.awayTimer = null;
+    }
+    this.environment = environment;
+    this.selectedId = selectedId;
+    if (!this.live) this.begin();
+    let detached = false;
+    return () => {
+      if (detached) return;
+      detached = true;
+      this.attachments--;
+      if (this.attachments === 0 && this.awayTimer === null) {
+        this.awayTimer = setTimeout(() => this.leave(), 0);
+      }
+    };
+  }
+
+  /** What the page shows changed: the environment (or `all`), and the selection. */
+  select(environment: string, selectedId: string | null): void {
+    this.selectedId = selectedId;
+    if (environment === this.environment) return;
+    this.environment = environment;
+    this.emit();
+    if (this.live) {
+      this.kick();
+      this.arm();
+    }
+  }
+
+  private begin(): void {
+    this.live = true;
+    const visit = this.visit;
     this.unsubscribe = this.sdk.subscribe({
       event: "thread:changed",
       callback: (event) => this.onThreadChanged(event),
     });
     document.addEventListener("visibilitychange", this.onVisibility);
-    void this.loadProjects();
-    this.restartTimers(true);
+    this.emit();
+    if (this.returned) void this.returnSequence(visit);
+    else {
+      this.kick();
+      this.arm();
+    }
   }
 
-  dispose(): void {
-    this.disposed = true;
-    this.started = false;
+  /** LIST-27: the page was left. Keep the rows; forget what was confirmed. */
+  private leave(): void {
+    this.awayTimer = null;
+    if (this.attachments > 0 || !this.live) return;
+    this.live = false;
     this.clearTimers();
     for (const timer of this.signalTimers.values()) clearTimeout(timer);
     this.signalTimers.clear();
     this.unsubscribe?.();
+    this.unsubscribe = null;
     document.removeEventListener("visibilitychange", this.onVisibility);
-    if (activeStore === this) setActiveHubStore(null);
+    this.visit++;
+    this.returned = this.hasRows() || this.environments !== null;
+    this.confirmed.clear();
+    this.environmentsListed = false;
+    this.attempted.clear();
+    this.listed.clear();
+    this.environmentErrors.clear();
+    this.threadsScanned = false;
+    this.scannedEnvironments.clear();
+    this.scanProgress = null;
+    this.environmentsError = null;
+    this.scanError = null;
+    this.returnPending = false;
+    this.emit();
   }
 
-  /** Points the store at a project and environment (or `all`). */
-  select(projectId: string | null, environment: string): void {
-    if (projectId === this.projectId && environment === this.environment) return;
-    if (projectId !== this.projectId) {
-      this.generation++;
-      this.environments = null;
-      this.environmentTerminals.clear();
-      this.threads.clear();
-      this.threadTerminals.clear();
-      this.retained.clear();
-      this.attempted.clear();
-      this.listed.clear();
-      this.environmentErrors.clear();
-      this.threadsScanned = false;
-      this.scannedEnvironments.clear();
-      this.scanProgress = null;
-      this.error = null;
+  private hasRows(): boolean {
+    return (
+      this.environmentTerminals.size > 0 || this.threadTerminals.size > 0 || this.retained.size > 0
+    );
+  }
+
+  /**
+   * LIST-28: on return, the selected terminal first, then the selected
+   * environment, then everything else on the usual cadence.
+   */
+  private async returnSequence(visit: number): Promise<void> {
+    if (hidden()) {
+      this.returnPending = true; // The visibility handler runs it once shown.
+      return;
     }
-    this.projectId = projectId;
-    this.environment = environment;
-    this.emit();
-    if (this.started) this.restartTimers(true);
+    const still = () => visit === this.visit && this.live;
+    // A check that never answers must not hold up everything else.
+    await Promise.race([
+      this.reconcileSelected(),
+      new Promise((resolve) => setTimeout(resolve, RECONCILE_WAIT_MS)),
+    ]);
+    if (!still()) return;
+    if (this.environment === ALL) {
+      const own = this.selectedEnvironment();
+      if (own !== null) await this.refreshEnvironmentScopes([own]);
+      if (!still()) return;
+      this.kick();
+    } else {
+      await this.refreshEnvironment();
+      if (!still()) return;
+      void this.loadEnvironments();
+    }
+    this.arm();
   }
 
   private readonly onVisibility = () => {
-    if (document.visibilityState === "visible") this.restartTimers(true);
-    else this.clearTimers();
+    if (hidden()) {
+      this.clearTimers();
+    } else if (this.returnPending) {
+      this.returnPending = false;
+      void this.returnSequence(this.visit);
+    } else {
+      this.kick();
+      this.arm();
+    }
   };
 
   private clearTimers(): void {
@@ -271,93 +412,111 @@ export class HubStore {
     this.timers = [];
   }
 
-  /** Re-arms the refresh cadence; with `now`, also refreshes immediately. */
-  private restartTimers(now: boolean): void {
+  /** Refreshes what the page shows, now. */
+  private kick(): void {
+    if (!this.live || hidden()) return;
+    if (this.environment === ALL) {
+      // The first fast tick needs the environment list, which the scan loads.
+      // A scan lists new environments' own terminals as soon as it finds them.
+      void this.scanProject();
+      if (this.environments !== null) void this.refreshEnvironmentScopes();
+    } else {
+      void this.loadEnvironments();
+      void this.refreshEnvironment();
+    }
+  }
+
+  /** Arms the refresh cadence (LIST-8, LIST-14). */
+  private arm(): void {
     this.clearTimers();
-    if (this.disposed || this.projectId === null) return;
-    if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+    if (!this.live || hidden()) return;
     const fast = () => {
+      if (this.environment !== ALL && !this.environmentsListed) void this.loadEnvironments();
       void (this.environment === ALL ? this.refreshEnvironmentScopes() : this.refreshEnvironment());
       this.timers[0] = setTimeout(fast, FAST_REFRESH_MS);
     };
-    const scan = () => {
-      void this.scanProject();
-      this.timers[1] = setTimeout(scan, SCAN_REFRESH_MS);
-    };
-    if (now) {
-      if (this.environment === ALL) {
-        // The first fast tick needs the environment list, which the scan loads.
-        // A scan lists new environments' own terminals as soon as it finds them.
+    this.timers[0] = setTimeout(fast, FAST_REFRESH_MS);
+    if (this.environment === ALL) {
+      const scan = () => {
         void this.scanProject();
-        if (this.environments !== null) void this.refreshEnvironmentScopes();
-        this.timers[0] = setTimeout(fast, FAST_REFRESH_MS);
         this.timers[1] = setTimeout(scan, SCAN_REFRESH_MS);
-      } else {
-        void this.loadEnvironments();
-        fast();
-      }
-    } else {
-      this.timers[0] = setTimeout(fast, FAST_REFRESH_MS);
-      if (this.environment === ALL) this.timers[1] = setTimeout(scan, SCAN_REFRESH_MS);
+      };
+      this.timers[1] = setTimeout(scan, SCAN_REFRESH_MS);
     }
+  }
+
+  // ── ordering ────────────────────────────────────────────────────────────
+
+  /** A sequence number for a request about to go out, or a change made here. */
+  private tick(): number {
+    return ++this.clock;
+  }
+
+  /**
+   * Whether data from request `seq` may replace scope `key`: only if nothing
+   * from a later request or action was written there.
+   */
+  private accept(key: string, seq: number): boolean {
+    if ((this.revisions.get(key) ?? 0) > seq) return false;
+    this.revisions.set(key, seq);
+    return true;
   }
 
   // ── loading ─────────────────────────────────────────────────────────────
 
-  private async loadProjects(): Promise<void> {
-    try {
-      this.projects = await this.sdk.projects.list();
-      this.emit();
-    } catch (error) {
-      this.error = message(error);
-      this.emit();
-    }
-  }
-
   /** True when the project's environments were listed. */
   private async loadEnvironments(): Promise<boolean> {
-    const projectId = this.projectId;
-    const generation = this.generation;
-    if (projectId === null) return false;
+    const visit = this.visit;
+    const seq = this.tick();
     try {
-      const environments = await this.sdk.environments.list({ projectId });
-      if (generation !== this.generation) return false;
-      this.environments = environments.filter((env) => env.status !== "destroyed");
-      for (const env of this.environments) this.requestHome(env.hostId);
+      const environments = await this.sdk.environments.list({ projectId: this.projectId });
+      if (this.accept("environments", seq)) {
+        this.environments = environments.filter((env) => env.status !== "destroyed");
+        for (const env of this.environments) this.requestHome(env.hostId);
+      }
+      if (visit === this.visit) {
+        this.environmentsListed = true;
+        this.environmentsError = null;
+      }
       this.emit();
       return true;
     } catch (error) {
-      if (generation !== this.generation) return false;
-      this.error = message(error);
+      if (visit === this.visit) this.environmentsError = message(error);
       this.emit();
       return false;
     }
   }
 
-  /** LIST-8: the selected environment, all of it. */
-  async refreshEnvironment(): Promise<void> {
-    const environmentId = this.environment;
-    const generation = this.generation;
-    if (this.projectId === null || environmentId === ALL) return;
+  /** LIST-8: one environment, all of it. True when it was listed. */
+  async refreshEnvironment(environmentId: string = this.environment): Promise<boolean> {
+    if (environmentId === ALL) return false;
+    const visit = this.visit;
+    const seq = this.tick();
+    let ok = false;
     try {
       const snapshot = await loadEnvironment(this.sdk, environmentId);
-      if (generation !== this.generation) return;
-      this.mergeEnvironment(environmentId, snapshot);
-      this.environmentErrors.delete(environmentId);
-      this.listed.add(environmentId);
+      this.mergeEnvironment(environmentId, snapshot, seq);
+      if (visit === this.visit) {
+        this.environmentErrors.delete(environmentId);
+        this.listed.add(environmentId);
+      }
+      ok = true;
     } catch (error) {
-      if (generation !== this.generation) return;
-      this.environmentErrors.set(environmentId, message(error));
+      if (visit === this.visit) this.environmentErrors.set(environmentId, message(error));
     }
-    this.attempted.add(environmentId);
+    if (visit === this.visit) this.attempted.add(environmentId);
     this.recheckPending();
     this.emit();
+    return ok;
   }
 
-  /** LIST-14: every environment's own terminals. */
-  async refreshEnvironmentScopes(): Promise<void> {
-    const generation = this.generation;
-    const environments = this.environments ?? [];
+  /** LIST-14: environments' own terminals, all or `only` these. True when all were listed. */
+  async refreshEnvironmentScopes(only?: readonly string[]): Promise<boolean> {
+    const visit = this.visit;
+    const environments = (this.environments ?? []).filter(
+      (env) => only === undefined || only.includes(env.id),
+    );
+    const seq = this.tick();
     const lists = await mapLimited(environments, SCAN_CONCURRENCY, async (env) => {
       try {
         return await listEnvironmentTerminals(this.sdk, env.id);
@@ -365,38 +524,42 @@ export class HubStore {
         return message(error);
       }
     });
-    if (generation !== this.generation) return;
+    let ok = true;
     environments.forEach((env, index) => {
       const list = lists[index];
-      if (typeof list === "string") this.environmentErrors.set(env.id, list);
-      else if (list) {
-        this.environmentErrors.delete(env.id);
-        this.replaceEnvironmentTerminals(env.id, list);
+      if (typeof list === "string") {
+        ok = false;
+        if (visit === this.visit) this.environmentErrors.set(env.id, list);
+      } else if (list) {
+        this.replaceEnvironmentTerminals(env.id, list, seq);
+        if (visit === this.visit) this.environmentErrors.delete(env.id);
       }
-      this.attempted.add(env.id);
+      if (visit === this.visit) this.attempted.add(env.id);
     });
     this.recheckPending();
     this.emit();
+    return ok;
   }
 
-  /** LIST-14: the full scan of every thread in the project; one at a time. */
-  scanProject(): Promise<void> {
-    const projectId = this.projectId;
-    const generation = this.generation;
-    if (projectId === null) return Promise.resolve();
-    if (this.scanning?.generation === generation) return this.scanning.promise;
-    const promise = this.runScan(projectId, generation, ++this.scanAttempt).finally(() => {
+  /**
+   * LIST-14: the full scan of every thread in the project; one at a time per
+   * visit. `fresh` starts a new one even if one is running. True on success.
+   */
+  scanProject(fresh = false): Promise<boolean> {
+    if (!fresh && this.scanning?.visit === this.visit) return this.scanning.promise;
+    const visit = this.visit;
+    const promise = this.runScan(visit, ++this.scanAttempt).finally(() => {
       if (this.scanning?.promise === promise) this.scanning = null;
     });
-    this.scanning = { generation, promise };
+    this.scanning = { visit, promise };
     return promise;
   }
 
-  private async runScan(projectId: string, generation: number, attempt: number): Promise<void> {
-    const live = () => generation === this.generation && attempt === this.scanAttempt;
-    // LIST-17: progress is shown until the first scan succeeds.
+  private async runScan(visit: number, attempt: number): Promise<boolean> {
+    const current = () => attempt === this.scanAttempt;
+    // LIST-17: progress is shown until the first scan since bb loaded succeeds.
     const progress = (next: ScanProgress | null) => {
-      if (!live() || this.threadsScanned) return;
+      if (!current() || visit !== this.visit || this.everScanned) return;
       this.scanProgress = next;
       this.emit();
     };
@@ -404,58 +567,95 @@ export class HubStore {
     try {
       if (!(await this.loadEnvironments())) {
         progress(null);
-        return;
+        return false;
       }
       const known = new Set((this.environments ?? []).map((env) => env.id));
-      if (live() && this.environments?.some((env) => !this.attempted.has(env.id))) {
+      if (
+        current() &&
+        visit === this.visit &&
+        this.environments?.some((env) => !this.attempted.has(env.id))
+      ) {
         void this.refreshEnvironmentScopes();
       }
-      const threads = await listAllThreads(this.sdk, { projectId });
+      const recordSeq = this.tick();
+      const threads = await listAllThreads(this.sdk, { projectId: this.projectId });
       progress({ scanned: 0, total: threads.length });
-      const terminals = await scanThreadTerminals(this.sdk, threads, (scanned) =>
-        progress({ scanned, total: threads.length }),
+      const seqs = new Map<string, number>();
+      const terminals = await scanThreadTerminals(
+        this.sdk,
+        threads,
+        (scanned) => progress({ scanned, total: threads.length }),
+        (threadId) => seqs.set(threadId, this.tick()),
       );
-      if (!live()) return;
-      const previous = this.threads;
-      this.threads = new Map(threads.map((thread) => [thread.id, thread]));
+      if (!current()) return false;
+      const previous = new Map(this.threads);
+      const incoming = new Map(threads.map((thread) => [thread.id, thread]));
+      for (const [id, record] of incoming) {
+        if (this.accept(`record:${id}`, recordSeq)) this.threads.set(id, record);
+      }
+      for (const id of [...this.threads.keys()]) {
+        if (!incoming.has(id) && this.accept(`record:${id}`, recordSeq)) this.threads.delete(id);
+      }
       for (const id of [...this.threadTerminals.keys()]) {
         // A deleted thread's terminals exit with it; keep its record for their rows.
-        if (!terminals.has(id)) this.replaceThreadTerminals(id, [], previous.get(id) ?? null);
+        if (!terminals.has(id)) {
+          this.replaceThreadTerminals(id, [], recordSeq, previous.get(id) ?? null);
+        }
       }
-      for (const [id, list] of terminals) this.replaceThreadTerminals(id, list);
+      for (const [id, list] of terminals) {
+        this.replaceThreadTerminals(id, list, seqs.get(id) ?? recordSeq);
+      }
       this.recheckPending();
-      this.threadsScanned = true;
-      this.scannedEnvironments = known;
+      this.everScanned = true;
       this.scanProgress = null;
-      this.error = null;
+      if (visit === this.visit) {
+        this.threadsScanned = true;
+        this.scannedEnvironments = known;
+        this.scanError = null;
+      }
+      this.emit();
+      return true;
     } catch (error) {
-      if (!live()) return;
-      this.error = message(error);
+      if (!current()) return false;
+      if (visit === this.visit) this.scanError = message(error);
       this.scanProgress = null;
+      this.emit();
+      return false;
     }
-    this.emit();
   }
 
   /** LIST-14: one thread, at once, when bb says its terminals changed. */
   async refreshThread(threadId: string): Promise<void> {
-    const generation = this.generation;
+    const seq = this.tick();
     try {
       const [thread, list] = await Promise.all([
         this.sdk.threads.get({ threadId }),
         listThreadTerminals(this.sdk, threadId),
       ]);
-      if (generation !== this.generation) return;
-      this.threads.set(thread.id, thread);
-      this.replaceThreadTerminals(threadId, list);
+      if (this.accept(`record:${thread.id}`, seq)) this.threads.set(thread.id, thread);
+      this.replaceThreadTerminals(threadId, list, seq);
       this.emit();
     } catch {
       // A deleted thread or a hiccup: the next scan settles it.
     }
   }
 
+  /**
+   * ACT-5: refreshes what `environment` shows, now. True only if every part
+   * of this refresh succeeded.
+   */
+  async refresh(environment: string): Promise<boolean> {
+    if (environment !== ALL) return this.refreshEnvironment(environment);
+    const [scanned, own] = await Promise.all([
+      this.scanProject(true),
+      this.refreshEnvironmentScopes(),
+    ]);
+    return scanned && own;
+  }
+
   private onThreadChanged(event: ThreadChangedEvent): void {
     const id = event.id;
-    if (this.projectId === null || id === undefined) return;
+    if (id === undefined) return;
     const known = this.threads.get(id);
     const inProject = known !== undefined || event.metadata?.projectId === this.projectId;
     if (!inProject) return;
@@ -476,31 +676,159 @@ export class HubStore {
       key,
       setTimeout(() => {
         this.signalTimers.delete(key);
-        if (!this.disposed) run();
+        if (this.live) run();
       }, SIGNAL_DEBOUNCE_MS),
     );
   }
 
-  // ── merging ─────────────────────────────────────────────────────────────
+  // ── the selected terminal ───────────────────────────────────────────────
 
-  private mergeEnvironment(environmentId: string, snapshot: EnvironmentSnapshot): void {
-    this.replaceEnvironmentTerminals(environmentId, snapshot.environmentTerminals);
-    for (const [id, thread] of this.threads) {
-      if (thread.environmentId === environmentId && !snapshot.threadTerminals.has(id)) {
-        this.threads.delete(id);
-        this.replaceThreadTerminals(id, [], thread);
+  /** The environment of the selected terminal, when the list holds it. */
+  private selectedEnvironment(): string | null {
+    const found = this.selectedId === null ? null : this.find(this.selectedId);
+    if (!found) return null;
+    return found.terminal.environmentId ?? found.thread?.environmentId ?? null;
+  }
+
+  /** LIST-28: running, exited, gone, or unreachable. Only a listed selection. */
+  private async reconcileSelected(): Promise<void> {
+    const id = this.selectedId;
+    if (id === null || !this.find(id)) return;
+    const seq = this.tick();
+    try {
+      const session = await this.sdk.terminals.get({ terminalId: id });
+      if (this.gone.has(id) || this.vanished.has(id)) return;
+      this.put(session, seq);
+    } catch (error) {
+      // Not reachable: the row and view stay, and the view shows the problem.
+      if (isNotFound(error)) this.vanish(id);
+    }
+    this.emit();
+  }
+
+  /**
+   * VIEW-7: the view saw its terminal end. An exit shows on the row at once;
+   * a closed session is checked with bb like any vanished row.
+   */
+  noteEnded(terminalId: string, status: "exited" | "gone", exitCode: number | null): void {
+    const found = this.find(terminalId);
+    if (!found || this.gone.has(terminalId)) return;
+    if (status === "exited") {
+      if (!isRunning(found.terminal) && !found.pending) return;
+      this.settle({ ...found.terminal, status: "exited", exitCode }, this.tick());
+    } else {
+      if (found.pending || !isRunning(found.terminal)) return;
+      this.drop(terminalId, this.tick());
+      this.retained.set(terminalId, {
+        terminal: found.terminal,
+        thread: found.thread,
+        pending: true,
+      });
+      void this.checkExited(found.terminal, found.thread);
+    }
+    this.emit();
+  }
+
+  /** A listed or retained terminal, with its owner record. */
+  private find(
+    terminalId: string,
+  ): { terminal: TerminalSession; thread: ThreadRecord | null; pending: boolean } | null {
+    for (const list of this.environmentTerminals.values()) {
+      const terminal = list.find((t) => t.id === terminalId);
+      if (terminal) return { terminal, thread: null, pending: false };
+    }
+    for (const [threadId, list] of this.threadTerminals) {
+      const terminal = list.find((t) => t.id === terminalId);
+      if (terminal) return { terminal, thread: this.threads.get(threadId) ?? null, pending: false };
+    }
+    const retained = this.retained.get(terminalId);
+    if (retained) {
+      const owner = retained.terminal.threadId
+        ? (this.threads.get(retained.terminal.threadId) ?? retained.thread)
+        : null;
+      return { terminal: retained.terminal, thread: owner, pending: retained.pending };
+    }
+    return null;
+  }
+
+  /** Whether something later than `seq` already wrote `key`. */
+  private outdated(key: string, seq: number): boolean {
+    return (this.revisions.get(key) ?? 0) > seq;
+  }
+
+  /** LIST-11: an exited session takes its row's place as a kept exited row. */
+  private settle(session: TerminalSession, seq: number): void {
+    const found = this.find(session.id);
+    if (!found || !this.accept(`terminal:${session.id}`, seq)) return;
+    this.drop(session.id, seq);
+    this.retained.set(session.id, { terminal: session, thread: found.thread, pending: false });
+  }
+
+  /** NAV-5: bb no longer has this terminal. */
+  private vanish(terminalId: string): void {
+    const seq = this.tick();
+    this.vanished.add(terminalId);
+    this.retained.delete(terminalId);
+    this.accept(`terminal:${terminalId}`, seq);
+    this.drop(terminalId, seq);
+  }
+
+  /** Takes a terminal out of whichever list holds it, as change `seq`. */
+  private drop(terminalId: string, seq: number): void {
+    for (const [id, list] of this.environmentTerminals) {
+      if (list.some((t) => t.id === terminalId) && this.accept(`env:${id}`, seq)) {
+        this.environmentTerminals.set(
+          id,
+          list.filter((t) => t.id !== terminalId),
+        );
       }
     }
-    for (const thread of snapshot.threads) this.threads.set(thread.id, thread);
-    for (const [id, list] of snapshot.threadTerminals) this.replaceThreadTerminals(id, list);
+    for (const [id, list] of this.threadTerminals) {
+      if (list.some((t) => t.id === terminalId) && this.accept(`thread:${id}`, seq)) {
+        const next = list.filter((t) => t.id !== terminalId);
+        if (next.length === 0) this.threadTerminals.delete(id);
+        else this.threadTerminals.set(id, next);
+      }
+    }
   }
 
-  /** A list that started before a close here can land after it; drop those. */
+  // ── merging ─────────────────────────────────────────────────────────────
+
+  private mergeEnvironment(
+    environmentId: string,
+    snapshot: EnvironmentSnapshot,
+    seq: number,
+  ): void {
+    this.replaceEnvironmentTerminals(environmentId, snapshot.environmentTerminals, seq);
+    for (const [id, thread] of [...this.threads]) {
+      if (
+        thread.environmentId === environmentId &&
+        !snapshot.threadTerminals.has(id) &&
+        this.accept(`record:${id}`, seq)
+      ) {
+        this.threads.delete(id);
+        this.replaceThreadTerminals(id, [], seq, thread);
+      }
+    }
+    for (const thread of snapshot.threads) {
+      if (this.accept(`record:${thread.id}`, seq)) this.threads.set(thread.id, thread);
+    }
+    for (const [id, list] of snapshot.threadTerminals) this.replaceThreadTerminals(id, list, seq);
+  }
+
+  /** Closed, dismissed, or not found: never shown from a list again. */
   private withoutGone(list: TerminalSession[]): TerminalSession[] {
-    return list.filter((terminal) => !this.gone.has(terminal.id));
+    return list.filter(
+      (terminal) => !this.gone.has(terminal.id) && !this.vanished.has(terminal.id),
+    );
   }
 
-  private replaceEnvironmentTerminals(environmentId: string, incoming: TerminalSession[]): void {
+  private replaceEnvironmentTerminals(
+    environmentId: string,
+    incoming: TerminalSession[],
+    seq: number,
+  ): void {
+    if (!this.accept(`env:${environmentId}`, seq)) return;
     const list = this.withoutGone(incoming);
     const previous = this.environmentTerminals.get(environmentId) ?? [];
     this.environmentTerminals.set(environmentId, list);
@@ -510,8 +838,10 @@ export class HubStore {
   private replaceThreadTerminals(
     threadId: string,
     incoming: TerminalSession[],
+    seq: number,
     owner: ThreadRecord | null = this.threads.get(threadId) ?? null,
   ): void {
+    if (!this.accept(`thread:${threadId}`, seq)) return;
     const list = this.withoutGone(incoming);
     const previous = this.threadTerminals.get(threadId) ?? [];
     if (list.length === 0) this.threadTerminals.delete(threadId);
@@ -543,12 +873,11 @@ export class HubStore {
 
   /** LIST-11: a listed terminal vanished; keep it if it exited. */
   private async checkExited(terminal: TerminalSession, thread: ThreadRecord | null): Promise<void> {
-    const generation = this.generation;
     if (this.checking.has(terminal.id)) return;
     this.checking.add(terminal.id);
     try {
       const session = await this.sdk.terminals.get({ terminalId: terminal.id });
-      if (generation !== this.generation || this.gone.has(terminal.id)) return;
+      if (this.gone.has(terminal.id)) return;
       if (!this.retained.get(terminal.id)?.pending) return;
       if (session.status === "exited") {
         this.retained.set(terminal.id, { terminal: session, thread, pending: false });
@@ -557,10 +886,9 @@ export class HubStore {
         this.retained.delete(terminal.id);
       }
     } catch (error) {
-      if (generation !== this.generation) return;
-      // Gone without a trace: nothing to show. Any other failure keeps the
-      // row waiting; the next refresh asks again.
-      if (isNotFound(error)) this.retained.delete(terminal.id);
+      // Gone without a trace: nothing to show (NAV-5). Any other failure
+      // keeps the row waiting; the next refresh asks again.
+      if (isNotFound(error)) this.vanish(terminal.id);
     } finally {
       this.checking.delete(terminal.id);
     }
@@ -644,7 +972,7 @@ export class HubStore {
     this.forget(terminalId);
   }
 
-  /** ACT-5. */
+  /** ACT-5: closes the rows that are still stale when checked again. */
   async closeAll(rows: readonly HubRow[]): Promise<BulkCloseResult> {
     const result = await closeAll(this.sdk, rows);
     for (const id of result.closed) this.forget(id);
@@ -654,15 +982,38 @@ export class HubStore {
   private forget(terminalId: string): void {
     this.gone.add(terminalId);
     this.retained.delete(terminalId);
-    const drop = (list: TerminalSession[]) => list.filter((t) => t.id !== terminalId);
-    for (const [id, list] of this.environmentTerminals)
-      this.environmentTerminals.set(id, drop(list));
-    for (const [id, list] of this.threadTerminals) this.threadTerminals.set(id, drop(list));
+    this.drop(terminalId, this.tick());
     this.emit();
   }
 
   /** Puts a session the hub just created or changed straight into the list. */
   upsert(session: TerminalSession): void {
+    if (this.gone.has(session.id) || this.vanished.has(session.id)) return;
+    this.put(session, this.tick());
+    this.requestHint(session.id);
+    this.emit();
+  }
+
+  /**
+   * A session bb just returned, as change `seq`: a running one goes into its
+   * list; an ended one becomes a kept exited row (LIST-11), never a list entry.
+   * Nothing happens if a later change already wrote its list or its row.
+   */
+  private put(session: TerminalSession, seq: number): void {
+    if (!isRunning(session)) {
+      this.settle(session, seq);
+      return;
+    }
+    const listKey = session.threadId
+      ? `thread:${session.threadId}`
+      : session.environmentId
+        ? `env:${session.environmentId}`
+        : null;
+    const rowKey = `terminal:${session.id}`;
+    if (listKey === null || this.outdated(listKey, seq) || this.outdated(rowKey, seq)) return;
+    this.accept(listKey, seq);
+    this.accept(rowKey, seq);
+    this.retained.delete(session.id);
     const replace = (list: TerminalSession[]) => {
       const index = list.findIndex((t) => t.id === session.id);
       if (index === -1) return [...list, session];
@@ -679,8 +1030,6 @@ export class HubStore {
         replace(this.environmentTerminals.get(session.environmentId) ?? []),
       );
     }
-    this.requestHint(session.id);
-    this.emit();
   }
 
   /** ACT-3: restart may hand back a new id; the old row goes. */
@@ -728,8 +1077,8 @@ export class HubStore {
   }
 
   /**
-   * LIST-10: an environment's terminals are all known when its full listing
-   * succeeded, or when its own list did after a full project scan.
+   * LIST-10: an environment's terminals are all known this visit when its
+   * full listing succeeded, or when its own list did after a full project scan.
    */
   private covered(environmentId: string): boolean {
     if (this.listed.has(environmentId)) return true;
@@ -740,60 +1089,73 @@ export class HubStore {
     );
   }
 
-  /** Whether a section's empty state can be shown (or its error). */
-  private loaded(environmentId: string): boolean {
-    if (this.environment !== ALL) {
-      return this.covered(environmentId) || this.environmentErrors.has(environmentId);
-    }
-    return this.environmentTerminals.has(environmentId) || this.attempted.has(environmentId);
+  /** LIST-10, LIST-17: complete this visit, failures allowed in All. */
+  private isComplete(environment: string): boolean {
+    if (environment !== ALL) return this.covered(environment);
+    return (
+      this.environmentsListed &&
+      this.environments !== null &&
+      this.threadsScanned &&
+      this.environments.every((env) => this.attempted.has(env.id))
+    );
   }
 
-  private computeView(): HubView {
+  /** LIST-27: complete this visit with nothing failed. */
+  private isConfirmed(environment: string): boolean {
+    if (!this.isComplete(environment)) return false;
+    if (environment !== ALL) return !this.environmentErrors.has(environment);
+    return this.currentError() === null && this.environmentErrors.size === 0;
+  }
+
+  private currentError(): string | null {
+    return this.scanError ?? this.environmentsError;
+  }
+
+  private computeView(environment: string): HubView {
+    const lastKnown =
+      this.returned && !this.confirmed.has(environment) && !this.isConfirmed(environment);
     const records =
-      this.environment === ALL
+      environment === ALL
         ? (this.environments ?? [])
-        : (this.environments?.filter((env) => env.id === this.environment) ?? []);
+        : (this.environments?.filter((env) => env.id === environment) ?? []);
     const environments = (this.environments ?? []).map(toInfo);
-    const sections: Section[] = records.map((env) => {
+    const section = (env: EnvironmentInfo): Section => {
       const grouped = groupEnvironment(this.snapshotFor(env.id));
+      const error = this.environmentErrors.get(env.id) ?? null;
       return {
-        environment: toInfo(env),
+        environment: env,
         grouped,
         running: runningCount(grouped),
-        loaded: this.loaded(env.id),
-        error: this.environmentErrors.get(env.id) ?? null,
+        loaded: (this.covered(env.id) && !lastKnown) || error !== null,
+        error,
       };
-    });
-    if (this.environment !== ALL && records.length === 0 && this.environments !== null) {
+    };
+    const sections = records.map((env) => section(toInfo(env)));
+    if (environment !== ALL && records.length === 0 && this.environments !== null) {
       // An environment id the project does not list (destroyed, or a bad link).
-      const grouped = groupEnvironment(this.snapshotFor(this.environment));
-      sections.push({
-        environment: { id: this.environment, name: this.environment, path: "", hostId: "" },
-        grouped,
-        running: runningCount(grouped),
-        loaded: this.loaded(this.environment),
-        error: this.environmentErrors.get(this.environment) ?? null,
-      });
+      sections.push(section({ id: environment, name: environment, path: "", hostId: "" }));
     }
-    const rows = sections.flatMap((section) => orderedRows(section.grouped));
-    const complete =
-      this.environments !== null &&
-      (this.environment === ALL
-        ? this.threadsScanned && this.environments.every((env) => this.attempted.has(env.id))
-        : this.covered(this.environment));
+    const rows = sections.flatMap((s) => orderedRows(s.grouped));
+    const failed =
+      environment === ALL
+        ? this.currentError() !== null || this.environmentErrors.size > 0
+        : this.currentError() !== null || this.environmentErrors.has(environment);
     return {
       projectId: this.projectId,
-      environment: this.environment,
-      projects: this.projects,
+      environment,
       environments: this.environments === null ? null : environments,
+      environmentsListed: this.environmentsListed,
       sections,
       rows,
-      running: sections.reduce((sum, section) => sum + section.running, 0),
+      running: sections.reduce((sum, s) => sum + s.running, 0),
       hints: new Map(this.hints),
       homes: new Map(this.homes),
-      error: this.error,
-      complete,
-      scan: this.environment === ALL ? this.scanProgress : null,
+      error: this.currentError(),
+      complete: this.isComplete(environment) && !lastKnown,
+      lastKnown,
+      freshness: !lastKnown ? "live" : failed ? "reconnecting" : "updating",
+      scan: environment === ALL && !this.everScanned ? this.scanProgress : null,
+      vanished: new Set(this.vanished),
     };
   }
 }
@@ -802,21 +1164,65 @@ function toInfo(env: EnvironmentRecord): EnvironmentInfo {
   return { id: env.id, name: environmentName(env), path: env.path ?? "", hostId: env.hostId };
 }
 
-// ── the page's store, for the title bar ───────────────────────────────────
+// ── one store per project, for the app session ────────────────────────────
 
-let activeStore: HubStore | null = null;
-const activeListeners = new Set<Listener>();
+const stores = new WeakMap<object, Map<string, HubStore>>();
 
-export function setActiveHubStore(store: HubStore | null): void {
-  activeStore = store;
-  for (const listener of activeListeners) listener();
+/** The project's store; `useSdk()` is stable for the plugin's lifetime. */
+export function hubStoreFor(sdk: HubSdk, projectId: string): HubStore {
+  let byProject = stores.get(sdk);
+  if (!byProject) {
+    byProject = new Map();
+    stores.set(sdk, byProject);
+  }
+  let store = byProject.get(projectId);
+  if (!store) {
+    store = new HubStore(sdk, projectId);
+    byProject.set(projectId, store);
+  }
+  return store;
 }
 
-export function getActiveHubStore(): HubStore | null {
-  return activeStore;
+// ── the project picker's list ──────────────────────────────────────────────
+
+/** BB's projects, for the picker and NAV-4; loaded again on each visit. */
+export class ProjectList {
+  private projects: ProjectRecord[] | null = null;
+  private error: string | null = null;
+  private listeners = new Set<Listener>();
+  private snapshot: { projects: ProjectRecord[] | null; error: string | null } = {
+    projects: null,
+    error: null,
+  };
+
+  constructor(private readonly sdk: Pick<HubSdk, "projects">) {}
+
+  subscribe = (listener: Listener): (() => void) => {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  };
+
+  get = () => this.snapshot;
+
+  async load(): Promise<void> {
+    try {
+      this.projects = await this.sdk.projects.list();
+      this.error = null;
+    } catch (error) {
+      this.error = message(error);
+    }
+    this.snapshot = { projects: this.projects, error: this.error };
+    for (const listener of this.listeners) listener();
+  }
 }
 
-export function subscribeActiveHubStore(listener: Listener): () => void {
-  activeListeners.add(listener);
-  return () => activeListeners.delete(listener);
+const projectLists = new WeakMap<object, ProjectList>();
+
+export function projectsFor(sdk: HubSdk): ProjectList {
+  let list = projectLists.get(sdk);
+  if (!list) {
+    list = new ProjectList(sdk);
+    projectLists.set(sdk, list);
+  }
+  return list;
 }

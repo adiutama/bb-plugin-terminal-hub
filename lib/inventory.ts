@@ -214,15 +214,18 @@ export async function listThreadTerminals(
 
 /**
  * The thread terminals of `threads`, fetched with bounded concurrency.
- * `onProgress` gets the number of threads listed so far.
+ * `onProgress` gets the number of threads listed so far; `onStart` hears
+ * each thread's request go out.
  */
 export async function scanThreadTerminals(
   sdk: InventorySdk,
   threads: readonly ThreadRecord[],
   onProgress?: (scanned: number) => void,
+  onStart?: (threadId: string) => void,
 ): Promise<Map<string, TerminalSession[]>> {
   let scanned = 0;
   const lists = await mapLimited(threads, SCAN_CONCURRENCY, async (thread) => {
+    onStart?.(thread.id);
     const list = await listThreadTerminals(sdk, thread.id);
     onProgress?.(++scanned);
     return list;

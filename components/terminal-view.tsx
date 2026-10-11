@@ -20,6 +20,8 @@ export interface TerminalViewProps {
   fresh?: boolean;
   onOutput?: (terminalId: string, bytes: Uint8Array) => void;
   onStatus?: (terminalId: string, status: ViewStatus, detail: string | null) => void;
+  /** VIEW-7: the session ended, so the list can mark its row at once. */
+  onExit?: (terminalId: string, status: "exited" | "gone", exitCode: number | null) => void;
 }
 
 function usePageVisible(): boolean {
@@ -40,6 +42,7 @@ export function TerminalView({
   fresh = false,
   onOutput,
   onStatus,
+  onExit,
 }: TerminalViewProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const pumpRef = useRef<TerminalPump | null>(null);
@@ -54,8 +57,8 @@ export function TerminalView({
 
   // Callbacks live in a ref so the pump effect depends only on the terminal
   // and never tears down a live view because a parent re-rendered.
-  const handlers = useRef({ onOutput, onStatus });
-  handlers.current = { onOutput, onStatus };
+  const handlers = useRef({ onOutput, onStatus, onExit });
+  handlers.current = { onOutput, onStatus, onExit };
   const initial = useRef({ cols, rows, fresh, visible });
 
   useEffect(() => {
@@ -73,6 +76,7 @@ export function TerminalView({
         setStatus({ status: next, detail });
         handlers.current.onStatus?.(terminalId, next, detail);
       },
+      onExit: (status, exitCode) => handlers.current.onExit?.(terminalId, status, exitCode),
       onOutput: (bytes) => handlers.current.onOutput?.(terminalId, bytes),
       onFindRequested: () => setFinding(true),
       onSearchResults: setResults,

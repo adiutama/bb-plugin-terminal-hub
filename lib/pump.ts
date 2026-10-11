@@ -35,6 +35,8 @@ export interface PumpOptions {
   /** Take keyboard focus once ready, e.g. for a terminal the user just created. */
   focusOnReady?: boolean;
   onStatus: (status: ViewStatus, detail: string | null) => void;
+  /** The session ended: it exited (with its code, if known), or was closed (`gone`). */
+  onExit?: (status: "exited" | "gone", exitCode: number | null) => void;
   /** Bytes the shell wrote, live or replayed, for the row's server hint. */
   onOutput?: (bytes: Uint8Array) => void;
   /** A meaningful OSC title the shell set, already normalised. Null clears it. */
@@ -693,6 +695,7 @@ export class TerminalPump {
           ? "Exited"
           : `Exited with code ${exitCode}`;
     this.setStatus("exited", label);
+    this.options.onExit?.(status === "gone" ? "gone" : "exited", exitCode);
   }
 
   /** Redraw the whole terminal from the session's retained scrollback. */

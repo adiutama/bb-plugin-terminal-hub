@@ -1,17 +1,30 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { toast } from "sonner";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { HeaderCount } from "../components/header-count";
 import { notFound, terminal, thread, world } from "./fixtures/fake-bb";
 import { loadApp, mountPage, openRowMenu, stopFollowing } from "./fixtures/page";
 
 // The real view loads Ghostty's WASM; the page tests only need to know
 // which terminal it was asked to show, and when (the view has its own tests).
 const mounts = vi.hoisted(() => [] as string[]);
+/** The mounted view's exit callback, so a test can play the shell exiting. */
+const view = vi.hoisted(() => ({
+  onExit: null as null | ((id: string, status: "exited" | "gone", code: number | null) => void),
+}));
 vi.mock("@/components/terminal-view", async () => {
   const { useEffect } = await import("react");
   return {
-    TerminalView: ({ terminalId, fresh }: { terminalId: string; fresh?: boolean }) => {
+    TerminalView: ({
+      terminalId,
+      fresh,
+      onExit,
+    }: {
+      terminalId: string;
+      fresh?: boolean;
+      onExit?: (id: string, status: "exited" | "gone", code: number | null) => void;
+    }) => {
+      view.onExit = onExit ?? null;
       useEffect(() => {
         mounts.push(`mount ${terminalId}`);
         return () => {
@@ -189,7 +202,7 @@ describe("navigation", () => {
     expect(await screen.findByText(/exited with code 2/)).toBeTruthy();
   });
 
-  it("NAV-5: going back to a terminal that exited after a project switch says it is gone", async () => {
+  it("LIST-28, LIST-11: going back to a terminal that exited after a project switch keeps its exited row", async () => {
     const w = world({
       projects: [
         { id: "proj_1", name: "Project one" },
@@ -200,12 +213,15 @@ describe("navigation", () => {
     const page = await mountPage(w, "proj_1/env_a/t1");
     await screen.findByText("two");
     page.goTo("proj_2/all");
+    await new Promise((resolve) => setTimeout(resolve, 20));
     const session = w.terminals[0];
     if (!session) throw new Error("fixture");
     session.status = "exited";
     session.exitCode = 0;
     page.goTo("proj_1/env_a/t1");
-    expect(await screen.findByText(/That terminal is gone/)).toBeInTheDocument();
+    expect(await sidebar().findByText("exit 0")).toBeInTheDocument();
+    expect(page.subPath()).toBe("proj_1/env_a/t1");
+    expect(screen.queryByText(/That terminal is gone/)).toBeNull();
   });
 
   it("NAV-5: a terminal that cannot be reached keeps the link and offers a retry", async () => {
@@ -226,13 +242,10 @@ describe("navigation", () => {
       terminal({ id: "a2" }),
       terminal({ id: "b1", environmentId: "env_b" }),
     );
-    await mountPage(w, "proj_1/env_a");
-    let header = render(<HeaderCount />).container;
-    expect(await within(header).findByText("2 running")).toBeTruthy();
-    cleanup();
-    await mountPage(w, "proj_1/all");
-    header = render(<HeaderCount />).container;
-    expect(await within(header).findByText("3 running")).toBeTruthy();
+    const page = await mountPage(w, "proj_1/env_a");
+    expect(await within(page.titleBar()).findByText("2 running")).toBeTruthy();
+    page.goTo("proj_1/all");
+    expect(await within(page.titleBar()).findByText("3 running")).toBeTruthy();
   });
 });
 
@@ -1170,5 +1183,297 @@ describe("page layout", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "Rename" }));
     expect(await bar().findByRole("heading", { name: "near" })).toBeTruthy();
+  });
+});
+
+describe("returning to the page", () => {
+  const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+  const summary = () => screen.getByRole("region", { name: "Summary" });
+  const filterBox = () =>
+    screen.findByRole<HTMLInputElement>("textbox", { name: "Filter terminals" });
+  /** Leaves the page long enough to count as leaving it. */
+  const away = async (page: { leave(): void }) => {
+    page.leave();
+    await sleep(20);
+  };
+  /** Holds every call of `method` until the returned function is called. */
+  function hold<A extends unknown[], R>(method: {
+    getMockImplementation(): ((...args: A) => R) | undefined;
+    mockImplementation(fn: (...args: A) => R): unknown;
+  }) {
+    const real = method.getMockImplementation();
+    const { promise, release } = gate();
+    method.mockImplementation(((...args: A) => promise.then(() => real?.(...args))) as unknown as (
+      ...args: A
+    ) => R);
+    return release;
+  }
+
+  it("LIST-27, LIST-17, NAV-6: shows the last known rows at once, says so in the summary and the title bar, and shows no scan progress", async () => {
+    const w = world({
+      threads: [thread({ id: "thr_1" })],
+      terminals: [
+        terminal({ id: "t1", title: "dev" }),
+        terminal({ id: "t2", title: "pnpm test", threadId: "thr_1" }),
+      ],
+    });
+    const page = await mountPage(w, "proj_1/all");
+    await sidebar().findByText("pnpm test");
+    await waitFor(() => expect(summary()).toHaveTextContent(/^2 running/));
+    await away(page);
+    const release = hold(page.sdk.threads.list);
+    page.returnTo("proj_1/all");
+    expect(sidebar().getByText("pnpm test")).toBeInTheDocument();
+    expect(screen.queryByText(/Scanning threads/)).toBeNull();
+    expect(summary()).toHaveTextContent("Last known·2 running·Updating…");
+    expect(page.titleBar()).toHaveTextContent("Last known · 2 running");
+    release();
+    await waitFor(() => expect(summary()).toHaveTextContent(/^2 running/));
+    expect(page.titleBar()).toHaveTextContent(/^2 running$/);
+  });
+
+  it("LIST-27, LIST-10, LIST-25: last known rows never claim that nothing is there", async () => {
+    const page = await mountPage(world(), "proj_1/env_a");
+    await sidebar().findByText("No terminals here yet.");
+    expect(screen.getByText(/No terminals found/)).toBeInTheDocument();
+    await away(page);
+    const release = hold(page.sdk.terminals.list);
+    page.returnTo("proj_1/env_a");
+    await sleep(20);
+    expect(sidebar().queryByText("No terminals here yet.")).toBeNull();
+    expect(screen.queryByText(/No terminals found/)).toBeNull();
+    expect(sidebar().getByText("Loading terminals…")).toBeInTheDocument();
+    release();
+    expect(await sidebar().findByText("No terminals here yet.")).toBeInTheDocument();
+  });
+
+  it("LIST-27, LIST-16, LIST-19, LIST-20: while last known, no cleanup, no 'No terminals match', and no empty environments", async () => {
+    const w = twoEnvironments();
+    w.threads.push(thread({ id: "thr_idle", title: "Release prep" }));
+    w.terminals.push(terminal({ id: "left", title: "pnpm test", threadId: "thr_idle" }));
+    const page = await mountPage(w, "proj_1/all");
+    await waitFor(() => expect(summary()).toHaveTextContent("Clean up 1 stale"));
+    await away(page);
+    const release = hold(page.sdk.threads.list);
+    page.returnTo("proj_1/all");
+    expect(within(summary()).queryByRole("button")).toBeNull();
+    fireEvent.change(await filterBox(), { target: { value: "feature" } });
+    await sleep(20);
+    expect(screen.queryByText(/No terminals match/)).toBeNull();
+    expect(screen.queryByRole("region", { name: "Empty environments" })).toBeNull();
+    release();
+    expect(await screen.findByText(/No terminals match/)).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Empty environments" })).toBeInTheDocument();
+  });
+
+  it("LIST-28, NAV-5: a selected terminal that went away meanwhile shows the gone notice and clears the selection", async () => {
+    const w = world({ terminals: [terminal({ id: "t1", title: "dev" })] });
+    const page = await mountPage(w, "proj_1/env_a/t1");
+    await screen.findByTestId("terminal-view");
+    await away(page);
+    w.terminals = [];
+    page.returnTo("proj_1/env_a/t1");
+    expect(await screen.findByText(/That terminal is gone/)).toBeInTheDocument();
+    await waitFor(() => expect(page.subPath()).toBe("proj_1/env_a"));
+  });
+
+  it("VIEW-7, LIST-11: when the view sees its terminal exit, the row shows the exit at once", async () => {
+    const w = world({ terminals: [terminal({ id: "t1", title: "dev" })] });
+    const page = await mountPage(w, "proj_1/env_a/t1");
+    await screen.findByTestId("terminal-view");
+    await waitFor(() => expect(summary()).toHaveTextContent(/^1 running/));
+    page.sdk.terminals.get.mockClear();
+    act(() => view.onExit?.("t1", "exited", 3));
+    expect(sidebar().getByText("exit 3")).toBeInTheDocument();
+    expect(summary()).toHaveTextContent(/^0 running/);
+    expect(page.sdk.terminals.get).not.toHaveBeenCalled();
+  });
+
+  it("NAV-10, NAV-4, NAV-8: the root route restores the project's remembered place, replacing the entry; a URL naming a project wins", async () => {
+    const w = world({ terminals: [terminal({ id: "t1", title: "dev" })] });
+    const page = await mountPage(w, "proj_1/env_a/t1");
+    await screen.findByTestId("terminal-view");
+    await away(page);
+    page.returnTo("");
+    await waitFor(() => expect(page.subPath()).toBe("proj_1/env_a/t1"));
+    expect(page.navigations().at(-1)).toEqual({ subPath: "proj_1/env_a/t1", replace: true });
+    await away(page);
+    page.returnTo("proj_1/all");
+    await sleep(50);
+    expect(page.subPath()).toBe("proj_1/all");
+  });
+
+  it("NAV-10: one project's remembered place is never used for another", async () => {
+    const w = world({
+      projects: [
+        { id: "proj_1", name: "Project one" },
+        { id: "proj_2", name: "Project two" },
+      ],
+      terminals: [terminal({ id: "t1", title: "dev" })],
+    });
+    const page = await mountPage(w, "proj_1/env_a/t1", { projectId: "proj_2" });
+    await screen.findByTestId("terminal-view");
+    await away(page);
+    page.returnTo("");
+    await waitFor(() => expect(page.subPath()).toBe("proj_2/all"));
+  });
+
+  it("LIST-21, NAV-9: the filter is kept on return to the same project, also through the root route, and cleared by a project change", async () => {
+    const w = world({
+      projects: [
+        { id: "proj_1", name: "Project one" },
+        { id: "proj_2", name: "Project two" },
+      ],
+      terminals: [terminal({ id: "t1", title: "one" }), terminal({ id: "t2", title: "two" })],
+    });
+    const page = await mountPage(w, "proj_1/all");
+    fireEvent.change(await filterBox(), { target: { value: "one" } });
+    await away(page);
+    page.returnTo("");
+    await waitFor(() => expect(page.subPath()).toBe("proj_1/all"));
+    expect(await filterBox()).toHaveValue("one");
+    expect(sidebar().queryByText("two")).toBeNull();
+    await away(page);
+    page.returnTo("proj_2/all");
+    expect(await filterBox()).toHaveValue("");
+    await away(page);
+    page.returnTo("proj_1/all");
+    expect(await filterBox()).toHaveValue("");
+  });
+
+  it("LIST-13: collapsed sections are remembered per project, across project switches and returns", async () => {
+    const w = twoEnvironments();
+    w.projects.push({ id: "proj_2", name: "Project two" });
+    w.terminals.push(terminal({ id: "a1", title: "on main" }));
+    w.terminals.push(terminal({ id: "b1", title: "on feature", environmentId: "env_b" }));
+    const page = await mountPage(w, "proj_1/all");
+    fireEvent.click(await screen.findByRole("button", { name: "Collapse main" }));
+    expect(sidebar().queryByText("on main")).toBeNull();
+    page.goTo("proj_2/all");
+    await sleep(20);
+    page.goTo("proj_1/all");
+    expect(await screen.findByRole("button", { name: "Expand main" })).toBeInTheDocument();
+    await away(page);
+    page.returnTo("proj_1/all");
+    expect(await screen.findByRole("button", { name: "Expand main" })).toBeInTheDocument();
+    expect(sidebar().getByText("on feature")).toBeInTheDocument();
+  });
+
+  it("LIST-29: returning puts the row that was at the top of the list back where it was; another project starts at the top", async () => {
+    const terminals = Array.from({ length: 30 }, (_, i) =>
+      terminal({ id: `r${i}`, title: `term ${i}`, createdAt: i }),
+    );
+    // A layout: the list starts 100px down and shows 200px; each row is 40px.
+    const tops = new WeakMap<Element, number>();
+    const scroller = () => {
+      const element = screen
+        .getByRole("complementary", { name: "Terminal list" })
+        .querySelector<HTMLElement>(".overflow-y-auto");
+      if (!element) throw new Error("no scroller");
+      return element;
+    };
+    const original = Object.getOwnPropertyDescriptor(Element.prototype, "scrollTop");
+    Object.defineProperty(Element.prototype, "scrollTop", {
+      configurable: true,
+      get(this: Element) {
+        return tops.get(this) ?? 0;
+      },
+      set(this: Element, value: number) {
+        tops.set(this, Math.max(0, value));
+      },
+    });
+    const box = (top: number, height: number) =>
+      ({ top, bottom: top + height, left: 0, right: 300, width: 300, height }) as DOMRect;
+    vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
+      this: Element,
+    ) {
+      if (this.classList.contains("overflow-y-auto")) return box(100, 200);
+      const id = (this as HTMLElement).dataset?.terminalId;
+      if (id) return box(100 + Number(id.slice(1)) * 40 - scroller().scrollTop, 40);
+      return box(0, 0);
+    });
+    try {
+      const page = await mountPage(
+        world({
+          projects: [
+            { id: "proj_1", name: "Project one" },
+            { id: "proj_2", name: "Project two" },
+          ],
+          terminals,
+        }),
+        "proj_1/env_a",
+      );
+      await sidebar().findByText("term 29");
+      scroller().scrollTop = 410;
+      fireEvent.scroll(scroller());
+      await sleep(50);
+      await away(page);
+      page.returnTo("proj_1/env_a");
+      expect(scroller().scrollTop).toBe(410);
+      // A project with no remembered position starts at the top.
+      page.goTo("proj_2/all");
+      expect(scroller().scrollTop).toBe(0);
+    } finally {
+      if (original) Object.defineProperty(Element.prototype, "scrollTop", original);
+      vi.restoreAllMocks();
+    }
+  });
+
+  it("ACT-5: Clean up refreshes first and lists only what is stale then; a failed refresh opens nothing", async () => {
+    const w = world({
+      threads: [thread({ id: "thr_idle", title: "Release prep" })],
+      terminals: [
+        terminal({ id: "l1", title: "pnpm test", threadId: "thr_idle" }),
+        terminal({ id: "l2", title: "vite", threadId: "thr_idle" }),
+      ],
+    });
+    const page = await mountPage(w, "proj_1/all");
+    await waitFor(() => expect(summary()).toHaveTextContent("Clean up 2 stale"));
+    const vite = w.terminals[1];
+    if (!vite) throw new Error("fixture");
+    vite.status = "exited";
+    fireEvent.click(within(summary()).getByRole("button", { name: "Clean up 2 stale" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog).toHaveTextContent("pnpm test");
+    expect(dialog).not.toHaveTextContent("vite");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+    const failed = vi.spyOn(toast, "error");
+    page.sdk.threads.list.mockRejectedValueOnce(new Error("bb is restarting"));
+    fireEvent.click(await within(summary()).findByRole("button", { name: /Clean up/ }));
+    await waitFor(() => expect(failed).toHaveBeenCalled());
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("NAV-6: the title bar takes the URL's project as it renders, never the previous one's count", async () => {
+    const w = world({
+      projects: [
+        { id: "proj_1", name: "Project one" },
+        { id: "proj_2", name: "Project two" },
+      ],
+      environments: [
+        ...world().environments,
+        {
+          id: "env_p2",
+          projectId: "proj_2",
+          name: "other",
+          branchName: null,
+          path: "/Users/me/other",
+          hostId: "host_1",
+          status: "ready",
+        },
+      ],
+      terminals: [
+        terminal({ id: "a1" }),
+        terminal({ id: "a2" }),
+        terminal({ id: "p2", environmentId: "env_p2" }),
+      ],
+    });
+    const page = await mountPage(w, "proj_1/all");
+    expect(await within(page.titleBar()).findByText("2 running")).toBeInTheDocument();
+    page.goTo("proj_2/all");
+    expect(page.titleBar()).not.toHaveTextContent("2 running");
+    expect(await within(page.titleBar()).findByText("1 running")).toBeInTheDocument();
   });
 });
