@@ -1,6 +1,6 @@
 # Actions
 
-- Status: agreed
+- Status: implemented
 - Prefix: ACT
 - Decisions: 202610100905, 202610100913, 202610101645, 202610171551
 

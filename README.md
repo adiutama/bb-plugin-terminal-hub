@@ -25,8 +25,7 @@ environments (checkouts and worktrees) that have terminals, in bb's order and
 under the project's name, as bb's own sidebar groups them. Each environment
 shows its name as bb shows it (`main`, `bb/map-all-page-urls`) and how many
 terminals run there. Pick one: its terminals become tabs above the terminal
-view. The title bar says where you are, `project / environment`, and how many
-terminals run there.
+view.
 
 - The page opens on the environment of the thread you came from, if something
   runs there; else on the one it last showed; else on the first listed. Each
@@ -34,26 +33,27 @@ terminals run there.
 - Click a project's name to fold it. Point at it to show **+**: its **New
   terminal in…** menu lists every environment of the project, including the
   ones where nothing runs yet, and starts a shell there. The **+** after the
-  last tab starts one in the selected environment.
-- Tabs list the environment's own terminals first (the ones you start here,
-  and the ones agents start for long-running processes), then the ones started
-  from threads, each oldest first. A tab shows the title and, for a running
-  server, its port (`:3000`). A terminal that ended keeps a dimmed tab with its
-  exit code until you dismiss it.
+  last tab starts one in the selected environment. With nothing running
+  anywhere, the page offers **New terminal in…** with every project's
+  environments.
+- Tabs are in the order the terminals were started, so a new shell is always
+  the rightmost tab, whether you, a thread, or an agent started it. A tab
+  shows the title and, for a running server, its port (`:3000`). A terminal
+  that ended keeps a dimmed tab with its exit code until you dismiss it.
+- Each tab's **×** (on the selected tab, or when you point at one) closes the
+  terminal, asking first if a thread started it; on an ended terminal it
+  dismisses the tab.
 - **Find environment** at the top of the rail narrows it to environments whose
   name, project, terminal titles, ports, or threads contain every word you
   type, so `5173` finds where vite runs. Press **/** while the page has focus
   to jump to it, **↓** to move into the rail, **Enter** to open the first
-  match, and **Esc** to clear it. **⌘K** stays bb's thread switcher.
+  match, and **Esc** to clear it.
 - The bar above the terminal shows its title (and exit code once it ended);
   under it, the project, environment and starting folder, the thread that owns
   it as a link (with its state when it is not active, like `idle 2h`), and the
   thread that spawned that one. On the right: the server address as a link,
-  **Restart shell**, and a **⋯** menu to **Rename**, **Close** (or
-  **Dismiss**), and **Close terminals from settled threads…** in this
-  environment. Closing a thread's terminal asks first; the cleanup lists the
-  environment again before it asks, and checks each terminal once more before
-  closing it, so nothing that came back to life is closed.
+  **Restart shell**, and a **⋯** menu to **Rename** and **Close** (or
+  **Dismiss**). Closing a thread's terminal asks first.
 - The terminal is rendered live with Ghostty's engine. Click into it to type;
   only the view you are typing in resizes the shell, so the same terminal open
   in a thread's sidebar keeps its size until then. **Cmd/Ctrl+F** searches its
@@ -61,10 +61,26 @@ terminals run there.
   process) and its tab goes, with the next one selected.
 - Leave the page, to open a thread for example, and come back: the rail and
   tabs are there at once, scrolled and folded as you left them, with the same
-  find text. Until everything is checked again the title bar says **Last
-  known**, and nothing claims a terminal is missing. A reload starts fresh.
+  find text. Until everything is checked again the rail says **Updating…**
+  (or **Reconnecting…** while bb cannot be reached) under the find field, and
+  nothing claims a terminal is missing. A reload starts fresh.
 - The URL names the project, environment, and terminal, so reloads, links, and
   back/forward return to the same shell.
+
+### Shortcuts
+
+While the Terminals page is shown, even with focus in the terminal (`⌘` is
+Ctrl outside macOS):
+
+| Keys | Does |
+| --- | --- |
+| **⌘T** | New terminal in the selected environment |
+| **⌘W** | Close the selected terminal (or dismiss it once ended) |
+| **⌘P** | Jump to Find environment |
+| **/** | Jump to Find environment (when not typing) |
+
+On every other page these keys keep bb's meaning, and **⌘K** is always bb's
+thread switcher. The page leaves them alone while a dialog or menu is open.
 
 Terminal Hub sits alongside bb's own terminals and leaves the thread sidebar
 alone.
