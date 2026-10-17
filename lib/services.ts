@@ -14,7 +14,13 @@ import {
   readVariables,
   scanListeners,
 } from "./processes";
-import type { Service, ServiceGroup, ServicesList, StopPlan } from "./services-contract";
+import type {
+  Service,
+  ServiceGroup,
+  ServicesList,
+  StopExpectation,
+  StopPlan,
+} from "./services-contract";
 
 /** SVC-5: how much of a log the drawer shows. */
 export const LOG_TAIL_BYTES = 64 * 1024;
@@ -84,12 +90,25 @@ interface Listed {
 
 type Target =
   | { kind: "changed" }
-  | { kind: "group"; pgid: number; members: ProcessInfo[] }
-  | { kind: "process"; process: ProcessInfo };
+  | { kind: "group"; service: Service; pgid: number; members: ProcessInfo[] }
+  | { kind: "process"; service: Service; process: ProcessInfo };
+
+/** SVC-19: the signal's target, as `plan` describes it. */
+function describe(target: Exclude<Target, { kind: "changed" }>): StopExpectation {
+  return target.kind === "group"
+    ? { scope: "group", target: target.pgid, count: target.members.length }
+    : { scope: "process", target: target.process.pid, count: 1 };
+}
 
 export class Services {
   /** SVC-13: what the latest scan listed, by PID. */
   private latest = new Map<number, Listed>();
+  /**
+   * SVC-9: listeners sent SIGTERM from here. While one is alive with the same
+   * start time it stays listed, so it can be force-stopped even after it
+   * closed its port.
+   */
+  private stopped = new Map<number, Service>();
   private index: EnvironmentIndex | null = null;
   private localHostId: Promise<string | null> | null = null;
   private titles = new Map<string, { at: number; title: Promise<string | null> }>();
@@ -106,13 +125,24 @@ export class Services {
     this.index = index;
     if (!scan.available) {
       this.latest = new Map();
-      return { available: false, groups: [], error: index.error };
+      return {
+        available: false,
+        hostKnown: index.localHostId !== null,
+        groups: [],
+        error: index.error,
+      };
     }
     const byEnvironment = new Map<string, Service[]>();
     const latest = new Map<number, Listed>();
     for (const listener of scan.listeners) {
       const service = await this.serviceFor(index, listener);
       if (!service) continue;
+      latest.set(service.pid, { service });
+      const services = byEnvironment.get(service.environmentId) ?? [];
+      services.push(service);
+      byEnvironment.set(service.environmentId, services);
+    }
+    for (const service of await this.stillStopping(latest)) {
       latest.set(service.pid, { service });
       const services = byEnvironment.get(service.environmentId) ?? [];
       services.push(service);
@@ -137,7 +167,12 @@ export class Services {
       services.sort((a, b) => (a.ports[0] ?? 0) - (b.ports[0] ?? 0) || a.pid - b.pid);
       groups.push({ ...group, checked: true, services });
     }
-    return { available: true, groups, error: index.error };
+    return {
+      available: true,
+      hostKnown: index.localHostId !== null,
+      groups,
+      error: index.error,
+    };
   }
 
   /** SVC-19: what Stop would signal, after the identity check. */
@@ -145,9 +180,11 @@ export class Services {
     const target = await this.target(pid, startedAt);
     if (target.kind === "changed") return { outcome: "changed" };
     const processes = target.kind === "group" ? target.members : [target.process];
+    const { scope, target: id } = describe(target);
     return {
       outcome: "ready",
-      scope: target.kind,
+      scope,
+      target: id,
       commands: processes.map((process) => process.command),
     };
   }
@@ -155,15 +192,25 @@ export class Services {
   /**
    * SVC-8, SVC-9, SVC-13, SVC-19: re-checks that `pid` was listed in the
    * latest scan and still has the start time listed, then sends SIGTERM (or
-   * SIGKILL with `force`) to its group or to it alone.
+   * SIGKILL with `force`) to its group or to it alone: only when that is still
+   * what `expected` (the plan the user confirmed) says.
    */
   async stop(
     pid: number,
     startedAt: number,
     force: boolean,
+    expected: StopExpectation,
   ): Promise<{ outcome: "changed" } | { outcome: "signalled"; count: number }> {
     const target = await this.target(pid, startedAt);
     if (target.kind === "changed") return { outcome: "changed" };
+    const now = describe(target);
+    if (
+      now.scope !== expected.scope ||
+      now.target !== expected.target ||
+      now.count !== expected.count
+    ) {
+      return { outcome: "changed" };
+    }
     const signal = force ? "SIGKILL" : "SIGTERM";
     try {
       if (target.kind === "group") this.host.kill(-target.pgid, signal);
@@ -173,6 +220,7 @@ export class Services {
       if ((error as { code?: string }).code === "ESRCH") return { outcome: "changed" };
       throw error;
     }
+    if (!force) this.stopped.set(pid, target.service);
     return {
       outcome: "signalled",
       count: target.kind === "group" ? target.members.length : 1,
@@ -235,7 +283,8 @@ export class Services {
     const all = await listProcesses(this.host, null);
     const process = all.find((p) => p.pid === pid);
     if (!process || process.startedAt !== startedAt) return { kind: "changed" };
-    const alone: Target = { kind: "process", process };
+    const service = listed.service;
+    const alone: Target = { kind: "process", service, process };
     const pgid = process.pgid;
     // Never this server's own group, nor init's.
     const own = all.find((p) => p.pid === this.host.selfPid)?.pgid ?? this.host.selfPid;
@@ -244,8 +293,31 @@ export class Services {
     const variables = await readVariables(this.host, members);
     if (members.some((member) => variables.get(member.pid)?.terminalSessionId)) return alone;
     const leader = members.find((member) => member.pid === pgid);
-    if (leader && !(await this.leaderBelongs(leader, listed.service, variables))) return alone;
-    return { kind: "group", pgid, members };
+    if (leader && !(await this.leaderBelongs(leader, service, variables))) return alone;
+    return { kind: "group", service, pgid, members };
+  }
+
+  /**
+   * SVC-9: listeners stopped from here that the scan no longer found (a
+   * process can close its port before it exits) but that still run with the
+   * start time they were listed with. The others are forgotten.
+   */
+  private async stillStopping(found: ReadonlyMap<number, Listed>): Promise<Service[]> {
+    for (const [pid, service] of this.stopped) {
+      const now = found.get(pid);
+      if (now && now.service.startedAt !== service.startedAt) this.stopped.delete(pid);
+    }
+    const missing = [...this.stopped.values()].filter((service) => !found.has(service.pid));
+    if (missing.length === 0) return [];
+    const alive = await listProcesses(
+      this.host,
+      missing.map((service) => service.pid),
+    );
+    return missing.filter((service) => {
+      const running = alive.some((p) => p.pid === service.pid && p.startedAt === service.startedAt);
+      if (!running) this.stopped.delete(service.pid);
+      return running;
+    });
   }
 
   /** SVC-19: the group's leader is listed, or belongs to the listener's environment. */

@@ -146,13 +146,26 @@ export async function startServer(w: World, m: Machine) {
   });
   await createPlugin(api, fake.host);
   disposers.push(() => harness.lifecycle.dispose());
+  const call = (method: string, input: unknown = null) =>
+    harness.behavior.callRpc(method, input) as Promise<any>;
   return {
     sdk: bb.sdk,
     machine: m,
     kills: fake.kills,
     calls: fake.calls,
-    call: (method: string, input: unknown = null) =>
-      harness.behavior.callRpc(method, input) as Promise<any>,
+    call,
     runCli: harness.behavior.runCli.bind(harness.behavior),
+    /**
+     * Stop as the page does: plan, then stop expecting that plan. Without a
+     * plan (the process changed), it expects the listener alone.
+     */
+    async stop(pid: number, startedAt: number, force: boolean) {
+      const plan = await call("services.plan", { pid, startedAt });
+      const expected =
+        plan.outcome === "ready"
+          ? { scope: plan.scope, target: plan.target, count: plan.commands.length }
+          : { scope: "process", target: pid, count: 1 };
+      return call("services.stop", { pid, startedAt, force, expected });
+    },
   };
 }

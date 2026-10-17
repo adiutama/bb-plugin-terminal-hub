@@ -31,7 +31,8 @@ export async function createPlugin(bb: BbPluginApi, host: ProcessHost) {
   bb.rpc.register(servicesContract, {
     "services.list": () => services.list(),
     "services.plan": ({ pid, startedAt }) => services.plan(pid, startedAt),
-    "services.stop": ({ pid, startedAt, force }) => services.stop(pid, startedAt, force),
+    "services.stop": ({ pid, startedAt, force, expected }) =>
+      services.stop(pid, startedAt, force, expected),
     "services.log": ({ pid, startedAt }) => services.log(pid, startedAt),
   });
 
