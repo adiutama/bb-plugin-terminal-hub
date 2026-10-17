@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from "vitest";
-import { isFindShortcut } from "../lib/keyboard";
+import { isFindShortcut, pageShortcut } from "../lib/keyboard";
 
 function slash(target: Element, extra: Partial<Parameters<typeof isFindShortcut>[0]> = {}) {
   return isFindShortcut({
@@ -51,5 +51,38 @@ describe("find shortcut", () => {
     expect(slash(button, { nativeEvent: { isComposing: true } })).toBe(false);
     expect(slash(button, { defaultPrevented: true })).toBe(false);
     expect(slash(button, { key: "?" })).toBe(false);
+  });
+});
+
+describe("page shortcuts", () => {
+  const press = (init: Partial<KeyboardEvent> & { key: string }) => ({
+    metaKey: false,
+    ctrlKey: false,
+    altKey: false,
+    shiftKey: false,
+    isComposing: false,
+    defaultPrevented: false,
+    ...init,
+  });
+
+  it("LIST-47: Mod is Cmd on macOS and Ctrl elsewhere, for T, W and P only", () => {
+    const root = document.createElement("div");
+    document.body.append(root);
+    try {
+      expect(pageShortcut(press({ key: "t", metaKey: true }), root, true)).toBe("new");
+      expect(pageShortcut(press({ key: "W", metaKey: true }), root, true)).toBe("close");
+      expect(pageShortcut(press({ key: "p", metaKey: true }), root, true)).toBe("find");
+      expect(pageShortcut(press({ key: "t", ctrlKey: true }), root, true)).toBeNull();
+      expect(pageShortcut(press({ key: "t", ctrlKey: true }), root, false)).toBe("new");
+      expect(pageShortcut(press({ key: "t", metaKey: true }), root, false)).toBeNull();
+      expect(pageShortcut(press({ key: "k", metaKey: true }), root, true)).toBeNull();
+      expect(pageShortcut(press({ key: "t", metaKey: true, altKey: true }), root, true)).toBeNull();
+      expect(
+        pageShortcut(press({ key: "t", metaKey: true, isComposing: true }), root, true),
+      ).toBeNull();
+      expect(pageShortcut(press({ key: "t", metaKey: true }), null, true)).toBeNull();
+    } finally {
+      root.remove();
+    }
   });
 });

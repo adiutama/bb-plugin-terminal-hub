@@ -299,21 +299,6 @@ describe("navigation", () => {
     expect(await screen.findByTestId("terminal-view")).toHaveTextContent("t_far");
   });
 
-  it("NAV-6: the title bar shows project / environment and its running count", async () => {
-    const w = twoProjects({
-      terminals: [
-        terminal({ id: "b1", environmentId: "env_b" }),
-        terminal({ id: "b2", environmentId: "env_b", status: "exited", exitCode: 0 }),
-        terminal({ id: "b3", environmentId: "env_b" }),
-        terminal({ id: "c1", environmentId: "env_c" }),
-      ],
-    });
-    const page = await mountPage(w, "proj_1/env_b/b1");
-    await screen.findByTestId("terminal-view");
-    await waitFor(() => expect(page.titleBar()).toHaveTextContent("Project one / bb/feature-x"));
-    expect(page.titleBar()).toHaveTextContent(/2 running$/);
-  });
-
   it("NAV-9, LIST-43: the find text is not in the URL and adds no history entry", async () => {
     const w = twoProjects({ terminals: [terminal({ id: "a1" })] });
     const page = await mountPage(w, "proj_1/env_a/a1");
@@ -725,12 +710,30 @@ describe("rail", () => {
     expect(railItems()).toEqual(["env_a"]);
   });
 
-  it("LIST-25: with nothing listed, the pane says how far the listing got", async () => {
+  it("LIST-25: with nothing listed, the pane says how far the listing got, and once complete offers New terminal in… for every project's environments", async () => {
     const page = await mountPage(twoProjects(), "", { projectId: null });
-    expect(
-      await screen.findByText("Nothing running. Start a shell from a project's +."),
-    ).toBeInTheDocument();
+    expect(await screen.findByText("Nothing running.")).toBeInTheDocument();
     expect(page.subPath()).toBe("");
+    const menu = await openMenu(screen.getByRole("button", { name: "New terminal in…" }));
+    expect(
+      within(menu)
+        .getAllByRole("group")
+        .map((group) => group.getAttribute("aria-label")),
+    ).toEqual(["Project one", "Project two"]);
+    expect(
+      within(menu)
+        .getAllByRole("menuitem")
+        .map((item) => item.textContent),
+    ).toEqual(["main", "bb/feature-x", "trunk"]);
+    fireEvent.click(within(menu).getByRole("menuitem", { name: "trunk" }));
+    await waitFor(() => expect(page.subPath()).toBe("proj_2/env_c/term_new_1"));
+    expect(page.sdk.terminals.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        scope: { kind: "environment", environmentId: "env_c" },
+        start: { mode: "shell" },
+      }),
+    );
+    expect(railItems()).toEqual(["env_c"]);
 
     cleanup();
     await mountPage(twoProjects(), "", { projectId: null }, (sdk) => {
@@ -740,6 +743,7 @@ describe("rail", () => {
       await screen.findByText("Could not list every terminal yet; trying again shortly."),
     ).toBeInTheDocument();
     expect(screen.queryByText(/Nothing running/)).toBeNull();
+    expect(screen.queryByRole("button", { name: "New terminal in…" })).toBeNull();
 
     cleanup();
     await mountPage(twoProjects(), "", { projectId: null }, (sdk) => {
@@ -748,11 +752,12 @@ describe("rail", () => {
     expect(
       await screen.findByText("Looking for terminals…", { selector: "p" }),
     ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "New terminal in…" })).toBeNull();
   });
 });
 
 describe("tabs", () => {
-  it("LIST-12: environment terminals first, then thread terminals, each oldest first", async () => {
+  it("LIST-12: tabs are in creation order, oldest first, whatever the scope", async () => {
     const w = world({
       threads: [
         thread({ id: "thr_new", latestAttentionAt: 9_000 }),
@@ -767,7 +772,7 @@ describe("tabs", () => {
     });
     await mountPage(w, "proj_1/env_a/e1");
     await waitFor(() => expect(tabNames()).toHaveLength(4));
-    expect(tabNames()).toEqual(["env one", "env two", "early thread", "late thread"]);
+    expect(tabNames()).toEqual(["early thread", "env one", "env two", "late thread"]);
   });
 
   it("LIST-38, LIST-7: a tab shows the title or Terminal, a running server's port, and an ended terminal dimmed with its exit code; nothing else", async () => {
@@ -789,7 +794,7 @@ describe("tabs", () => {
     build.exitCode = 1;
     page.emitThreadChanged({ id: "thr_1", changes: ["terminals-changed"] });
     const ended = await tabs().findByRole("tab", { name: "build exit 1" });
-    expect(ended).toHaveClass("text-muted-foreground/60");
+    expect(ended.parentElement).toHaveClass("text-muted-foreground/60");
     // No status dots, ages, folders, threads, or stale marks.
     expect(ended).not.toHaveTextContent("Ship it");
     expect(web.querySelector("[data-status], [role='img']")).toBeNull();
@@ -841,8 +846,8 @@ describe("tabs", () => {
     expect(page.sdk.terminals.create).toHaveBeenCalledWith(
       expect.objectContaining({ scope: { kind: "environment", environmentId: "env_a" } }),
     );
-    // Last of its group: after the environment terminals, before thread ones.
-    expect(tabNames()).toEqual(["env", "zsh", "thread"]);
+    // Always the rightmost tab, whatever the scope of the others.
+    expect(tabNames()).toEqual(["env", "thread", "zsh"]);
     await waitFor(() => expect(mounts).toContain("mount term_new_1 fresh"));
     fireEvent.click(tabs().getByRole("tab", { name: "env" }));
     await waitFor(() => expect(page.subPath()).toBe("proj_1/env_a/e1"));
@@ -882,10 +887,11 @@ describe("tabs", () => {
     const w = world({ terminals: [terminal({ id: "t1", title: "dev" })] });
     const page = await mountPage(w, "proj_1/env_a/t1");
     await screen.findByTestId("terminal-view");
-    await waitFor(() => expect(page.titleBar()).toHaveTextContent("1 running"));
+    await waitFor(() => expect(railItem("env_a")).toHaveTextContent(/^main1$/));
     act(() => view.onExit?.("t1", "exited", 3, null));
     expect(tabs().getByRole("tab", { name: "dev exit 3" })).toBeInTheDocument();
-    expect(page.titleBar()).toHaveTextContent("0 running");
+    expect(railItem("env_a")).toHaveTextContent(/^main$/);
+    expect(page.subPath()).toBe("proj_1/env_a/t1");
   });
 
   it("LIST-32, ACT-7: a terminal the user ended from the view goes, and the tab to its right is selected", async () => {
@@ -1039,7 +1045,7 @@ describe("bar and actions", () => {
       within(menu)
         .getAllByRole("menuitem")
         .map((item) => item.textContent),
-    ).toEqual(["Rename", "Close", "Close terminals from settled threads…"]);
+    ).toEqual(["Rename", "Close"]);
     fireEvent.click(within(menu).getByRole("menuitem", { name: "Rename" }));
     fireEvent.change(await screen.findByRole("textbox", { name: "Terminal title" }), {
       target: { value: "tests" },
@@ -1089,55 +1095,10 @@ describe("bar and actions", () => {
     expect(tabs().getByRole("tab", { name: "dev" })).toBeInTheDocument();
     expect(page.subPath()).toBe("proj_1/env_a/t1");
   });
-
-  it("ACT-5: Close terminals from settled threads lists the selected environment's again, confirms once, and closes them", async () => {
-    const w = twoProjects({
-      threads: [
-        thread({ id: "thr_idle", title: "Release prep", status: "idle" }),
-        thread({ id: "thr_busy", title: "Working", status: "active" }),
-        thread({ id: "thr_other", title: "Elsewhere", status: "idle", environmentId: "env_b" }),
-      ],
-      terminals: [
-        terminal({ id: "mine", title: "mine", createdAt: 1 }),
-        terminal({ id: "busy", title: "busy", threadId: "thr_busy", createdAt: 2 }),
-        terminal({ id: "left", title: "left over", threadId: "thr_idle", createdAt: 3 }),
-        terminal({ id: "far", title: "far", threadId: "thr_other", environmentId: "env_b" }),
-      ],
-    });
-    const page = await mountPage(w, "proj_1/env_a/mine");
-    await screen.findByTestId("terminal-view");
-    // A second settled terminal appears before the cleanup is opened.
-    w.terminals.push(terminal({ id: "late", title: "late", threadId: "thr_idle", createdAt: 4 }));
-    const menu = await openMenu(bar().getByRole("button", { name: "More actions for mine" }));
-    fireEvent.click(
-      within(menu).getByRole("menuitem", { name: "Close terminals from settled threads…" }),
-    );
-    const dialog = await screen.findByRole("dialog");
-    expect(dialog).toHaveTextContent("left over");
-    expect(dialog).toHaveTextContent("late");
-    expect(dialog).not.toHaveTextContent("busy");
-    expect(dialog).not.toHaveTextContent("far");
-    fireEvent.click(within(dialog).getByRole("button", { name: "Close 2" }));
-    await waitFor(() => expect(page.sdk.terminals.close).toHaveBeenCalledTimes(2));
-    await waitFor(() => expect(tabNames()).toEqual(["mine", "busy"]));
-  });
-
-  it("ACT-5: the cleanup item is disabled when no thread terminal of the environment is settled", async () => {
-    const w = world({
-      threads: [thread({ id: "thr_busy", status: "active" })],
-      terminals: [terminal({ id: "t1", threadId: "thr_busy" })],
-    });
-    await mountPage(w, "proj_1/env_a/t1");
-    await screen.findByTestId("terminal-view");
-    const menu = await openMenu(bar().getByRole("button", { name: "More actions for t1" }));
-    expect(
-      within(menu).getByRole("menuitem", { name: "Close terminals from settled threads…" }),
-    ).toHaveAttribute("data-disabled");
-  });
 });
 
 describe("returning to the page", () => {
-  it("LIST-27, NAV-6: shows the last known rail and tabs at once, says so in the title bar, and never claims nothing runs", async () => {
+  it("LIST-27: shows the last known rail and tabs at once, says Updating… under the find field, and never claims nothing runs", async () => {
     const w = twoProjects({
       threads: [thread({ id: "thr_1" })],
       terminals: [
@@ -1147,7 +1108,8 @@ describe("returning to the page", () => {
     });
     const page = await mountPage(w, "proj_1/env_a/t1");
     await waitFor(() => expect(tabNames()).toEqual(["dev", "pnpm test"]));
-    await waitFor(() => expect(page.titleBar()).toHaveTextContent(/2 running$/));
+    await waitFor(() => expect(railItem("env_a")).toHaveTextContent(/^main2$/));
+    expect(rail().queryByText(/Updating…|Reconnecting…/)).toBeNull();
     await away(page);
     w.terminals = [];
     const release = hold(page.sdk.threads.list);
@@ -1155,11 +1117,11 @@ describe("returning to the page", () => {
     expect(tabNames()).toEqual(["dev", "pnpm test"]);
     expect(railItems()).toEqual(["env_a"]);
     expect(rail().queryByText(/Looking for terminals/)).toBeNull();
-    expect(page.titleBar()).toHaveTextContent("Last known · 2 running");
+    expect(rail().getByRole("status")).toHaveTextContent("Updating…");
     await sleep(30);
     expect(screen.queryByText(/Nothing running/)).toBeNull();
     release();
-    await waitFor(() => expect(page.titleBar()).not.toHaveTextContent("Last known"));
+    await waitFor(() => expect(rail().queryByText("Updating…")).toBeNull());
   });
 
   it("LIST-28, NAV-5, ACT-7: a selected terminal that went away meanwhile shows the gone notice and selects as after a close", async () => {
@@ -1210,11 +1172,14 @@ describe("returning to the page", () => {
   it("LIST-27: while bb's realtime connection is down, the lists are last known; when it is back they are confirmed again", async () => {
     const w = world({ terminals: [terminal({ id: "t1" })] });
     const page = await mountPage(w, "proj_1/env_a/t1");
-    await waitFor(() => expect(page.titleBar()).toHaveTextContent(/^main1 running$|1 running$/));
+    await screen.findByTestId("terminal-view");
+    await sleep(20);
+    expect(rail().queryByText(/Updating…|Reconnecting…/)).toBeNull();
     await page.slot.setRealtimeConnectionState("reconnecting");
-    await waitFor(() => expect(page.titleBar()).toHaveTextContent("Last known · 1 running"));
+    expect(await rail().findByText("Reconnecting…")).toBeInTheDocument();
+    expect(tabNames()).toEqual(["t1"]);
     await page.slot.setRealtimeConnectionState("connected");
-    await waitFor(() => expect(page.titleBar()).not.toHaveTextContent("Last known"));
+    await waitFor(() => expect(rail().queryByText(/Updating…|Reconnecting…/)).toBeNull());
   });
 
   it("NAV-4: back from a page with no environment opens the environment the page last showed", async () => {
@@ -1271,4 +1236,179 @@ it("NAV-5: a dead link is resolved even when another environment cannot be liste
   });
   expect(await screen.findByText(/That terminal is gone/)).toBeInTheDocument();
   await waitFor(() => expect(page.subPath()).toBe("proj_1/env_a/a1"));
+});
+
+describe("tab close and shortcuts", () => {
+  /** A stand-in for bb's own shortcut handling, registered at the document. */
+  function bbListener() {
+    const seen: string[] = [];
+    const listener = (event: KeyboardEvent) => seen.push(event.key);
+    document.addEventListener("keydown", listener, { capture: true });
+    return {
+      seen,
+      stop: () => document.removeEventListener("keydown", listener, { capture: true }),
+    };
+  }
+  /** Presses Mod+`key` (Ctrl outside macOS, as in jsdom) on `target`. */
+  function mod(target: Element, key: string) {
+    const event = new KeyboardEvent("keydown", {
+      key,
+      ctrlKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    act(() => {
+      target.dispatchEvent(event);
+    });
+    return event;
+  }
+  const closeButton = (name: string) =>
+    screen.getByRole("button", { name: new RegExp(`^(Close|Dismiss) ${name}$`) });
+
+  it("LIST-46: every tab has a ×, shown on the selected tab, on hover or focus, and with a coarse pointer, keeping its space when hidden", async () => {
+    const w = world({
+      terminals: [terminal({ id: "t1", createdAt: 1 }), terminal({ id: "t2", createdAt: 2 })],
+    });
+    await mountPage(w, "proj_1/env_a/t1");
+    await screen.findByTestId("terminal-view");
+    const selected = closeButton("t1");
+    const other = closeButton("t2");
+    expect(selected).toHaveClass("opacity-100");
+    expect(other).toHaveClass(
+      "opacity-0",
+      "group-hover:opacity-100",
+      "group-focus-within:opacity-100",
+      "pointer-coarse:opacity-100",
+    );
+    expect(other).not.toHaveClass("hidden");
+    // The × sits in the tab, after its label.
+    const tab = tabs().getByRole("tab", { name: "t2" });
+    expect(tab.parentElement).toContainElement(other);
+    expect(tab.parentElement).toHaveClass("group");
+    expect(tab.nextElementSibling).toBe(other);
+  });
+
+  it("LIST-46, ACT-4, ACT-7: × closes a running environment terminal without asking, asks for a thread terminal, and dismisses an ended one", async () => {
+    const w = world({
+      threads: [thread({ id: "thr_1", title: "Release prep", status: "active" })],
+      terminals: [
+        terminal({ id: "t1", title: "one", createdAt: 1 }),
+        terminal({ id: "t2", title: "two", threadId: "thr_1", createdAt: 2 }),
+        terminal({ id: "t3", title: "three", createdAt: 3 }),
+      ],
+    });
+    const page = await mountPage(w, "proj_1/env_a/t1");
+    await screen.findByTestId("terminal-view");
+    fireEvent.click(closeButton("one"));
+    await waitFor(() => expect(page.subPath()).toBe("proj_1/env_a/t2"));
+    expect(page.sdk.terminals.close).toHaveBeenCalledWith({ terminalId: "t1", mode: "force" });
+    expect(tabNames()).toEqual(["two", "three"]);
+
+    fireEvent.click(closeButton("two"));
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog).toHaveTextContent("Release prep");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Close terminal" }));
+    await waitFor(() => expect(page.subPath()).toBe("proj_1/env_a/t3"));
+
+    act(() => view.onExit?.("t3", "exited", 1, null));
+    expect(tabs().getByRole("tab", { name: "three exit 1" })).toBeInTheDocument();
+    page.sdk.terminals.close.mockClear();
+    fireEvent.click(closeButton("three"));
+    await waitFor(() => expect(tabs().queryAllByRole("tab")).toHaveLength(0));
+    expect(page.sdk.terminals.close).not.toHaveBeenCalled();
+  });
+
+  it("LIST-47, LIST-40: Mod+T starts a shell in the selected environment as the rightmost tab, before bb or the shell sees the key", async () => {
+    const w = world({
+      terminals: [terminal({ id: "t1", title: "one", createdAt: 1 })],
+    });
+    const page = await mountPage(w, "proj_1/env_a/t1");
+    const terminalView = await screen.findByTestId("terminal-view");
+    const bb = bbListener();
+    try {
+      const event = mod(terminalView, "t");
+      expect(event.defaultPrevented).toBe(true);
+      expect(bb.seen).toEqual([]);
+      await waitFor(() => expect(page.subPath()).toBe("proj_1/env_a/term_new_1"));
+      expect(tabNames()).toEqual(["one", "zsh"]);
+      expect(page.navigations().at(-1)?.replace).toBe(false);
+    } finally {
+      bb.stop();
+    }
+  });
+
+  it("LIST-47, ACT-7: Mod+W does what the selected tab's × does", async () => {
+    const w = world({
+      threads: [thread({ id: "thr_1", title: "Release prep", status: "active" })],
+      terminals: [
+        terminal({ id: "t1", title: "one", createdAt: 1 }),
+        terminal({ id: "t2", title: "two", threadId: "thr_1", createdAt: 2 }),
+      ],
+    });
+    const page = await mountPage(w, "proj_1/env_a/t1");
+    const terminalView = await screen.findByTestId("terminal-view");
+    mod(terminalView, "w");
+    await waitFor(() => expect(page.subPath()).toBe("proj_1/env_a/t2"));
+    expect(page.sdk.terminals.close).toHaveBeenCalledWith({ terminalId: "t1", mode: "force" });
+    mod(await screen.findByTestId("terminal-view"), "W");
+    expect(await screen.findByRole("dialog")).toHaveTextContent("Release prep");
+  });
+
+  it("LIST-47: Mod+P focuses the find field and selects its text", async () => {
+    await mountPage(world({ terminals: [terminal({ id: "t1" })] }), "proj_1/env_a/t1");
+    const terminalView = await screen.findByTestId("terminal-view");
+    fireEvent.change(findField(), { target: { value: "main" } });
+    terminalView.focus();
+    const event = mod(document.body, "p");
+    expect(event.defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(findField());
+    expect(findField().selectionStart).toBe(0);
+    expect(findField().selectionEnd).toBe(4);
+  });
+
+  it("LIST-47: with a dialog or menu open, focus outside the page, other modifiers, or the page left, the keys keep bb's meaning", async () => {
+    const w = world({
+      threads: [thread({ id: "thr_1", status: "active" })],
+      terminals: [terminal({ id: "t1", title: "one", threadId: "thr_1" })],
+    });
+    const page = await mountPage(w, "proj_1/env_a/t1");
+    const terminalView = await screen.findByTestId("terminal-view");
+    const bb = bbListener();
+    try {
+      // A dialog is open: Mod+W does not reach the page.
+      mod(terminalView, "w");
+      const dialog = await screen.findByRole("dialog");
+      expect(bb.seen).toEqual([]);
+      expect(mod(dialog, "w").defaultPrevented).toBe(false);
+      expect(bb.seen).toEqual(["w"]);
+      fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+      // Focus in bb's own UI, outside the page.
+      const outside = document.createElement("input");
+      document.body.append(outside);
+      outside.focus();
+      expect(mod(outside, "t").defaultPrevented).toBe(false);
+      outside.remove();
+
+      // Other modifiers, and Mod+K, are bb's.
+      const shifted = new KeyboardEvent("keydown", {
+        key: "t",
+        ctrlKey: true,
+        shiftKey: true,
+        bubbles: true,
+        cancelable: true,
+      });
+      document.body.dispatchEvent(shifted);
+      expect(shifted.defaultPrevented).toBe(false);
+      expect(mod(document.body, "k").defaultPrevented).toBe(false);
+      expect(page.sdk.terminals.create).not.toHaveBeenCalled();
+
+      await away(page);
+      expect(mod(document.body, "t").defaultPrevented).toBe(false);
+      expect(page.sdk.terminals.create).not.toHaveBeenCalled();
+    } finally {
+      bb.stop();
+    }
+  });
 });

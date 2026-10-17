@@ -72,7 +72,7 @@ describe("session list inventory", () => {
     ]);
   });
 
-  it("VIEW-9, ACT-5: a thread's title and state: active, idle, error, or archived", () => {
+  it("VIEW-9: a thread's title and state: active, idle, error, or archived", () => {
     expect(threadState(thread({ id: "a", status: "active" }))).toBe("active");
     expect(threadState(thread({ id: "b", status: "starting" }))).toBe("active");
     expect(threadState(thread({ id: "c", status: "stopping" }))).toBe("active");
@@ -145,7 +145,7 @@ describe("session list inventory", () => {
     expect(grouped.threads[0]?.rows.map((row) => row.terminal.id)).toEqual(["b1", "b2"]);
   });
 
-  it("LIST-12: tabs are environment terminals, then thread terminals, each group oldest first", () => {
+  it("LIST-12: tabs are in creation order, oldest first, whatever the scope", () => {
     const grouped = groupEnvironment({
       environmentTerminals: [
         terminal({ id: "env_new", createdAt: 30 }),
@@ -167,11 +167,11 @@ describe("session list inventory", () => {
       ]),
     });
     expect(tabOrder(grouped).map((row) => row.terminal.id)).toEqual([
-      "env_old",
-      "env_new",
       "q1",
+      "env_old",
       "b1",
       "b2",
+      "env_new",
     ]);
   });
 });

@@ -1,13 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   CloseFailedError,
-  closeAll,
   closeTerminal,
   needsConfirmation,
   nextSelection,
   renameTerminal,
   restartTerminal,
-  settledTargets,
 } from "../lib/actions";
 import { type HubRow, toHubThread } from "../lib/inventory";
 import { fakeSdk, terminal, thread, world } from "./fixtures/fake-bb";
@@ -45,72 +43,6 @@ describe("actions", () => {
   it("ACT-4: asks before closing thread terminals, never for environment terminals", () => {
     expect(needsConfirmation(row({ id: "env" }))).toBe(false);
     expect(needsConfirmation(row({ id: "thr" }, { id: "thr_1" }))).toBe(true);
-  });
-
-  it("ACT-5: targets every running thread terminal whose thread is not active, archived included", () => {
-    const rows = [
-      row({ id: "env" }),
-      row({ id: "active" }, { id: "thr_a", status: "active" }),
-      row({ id: "idle" }, { id: "thr_i", status: "idle" }),
-      row({ id: "error" }, { id: "thr_e", status: "error" }),
-      row({ id: "archived" }, { id: "thr_x", archivedAt: 1 }),
-      row({ id: "exited", status: "exited", exitCode: 0 }, { id: "thr_i2", status: "idle" }),
-    ];
-    expect(settledTargets(rows).map((r) => r.terminal.id)).toEqual(["idle", "error", "archived"]);
-  });
-
-  it("ACT-5: closes each target and reports the ones that failed", async () => {
-    const w = world({
-      terminals: [
-        terminal({ id: "a", threadId: "thr_1" }),
-        terminal({ id: "b", threadId: "thr_1" }),
-      ],
-    });
-    const { sdk } = fakeSdk(w);
-    sdk.terminals.close.mockImplementationOnce(async () => {
-      throw new Error("host offline");
-    });
-    const result = await closeAll(sdk, [
-      row({ id: "a" }, { id: "thr_1" }),
-      row({ id: "b" }, { id: "thr_1" }),
-    ]);
-    expect(result.closed).toEqual(["b"]);
-    expect(result.failed.map((f) => [f.row.terminal.id, f.message])).toEqual([
-      ["a", "host offline"],
-    ]);
-  });
-
-  it("ACT-5: checks each confirmed terminal again and leaves the ones no longer stale", async () => {
-    const w = world({
-      threads: [thread({ id: "thr_idle" }), thread({ id: "thr_busy", status: "active" })],
-      terminals: [
-        terminal({ id: "still", threadId: "thr_idle" }),
-        terminal({ id: "exited", threadId: "thr_idle", status: "exited", exitCode: 0 }),
-        terminal({ id: "woke", threadId: "thr_busy" }),
-        terminal({ id: "unknown", threadId: "thr_idle" }),
-      ],
-    });
-    const { sdk } = fakeSdk(w);
-    const real = sdk.terminals.get.getMockImplementation();
-    sdk.terminals.get.mockImplementation(async (args) => {
-      if (args.terminalId === "unknown") throw new Error("host offline");
-      return real?.(args) as never;
-    });
-    const result = await closeAll(sdk, [
-      row({ id: "still" }, { id: "thr_idle" }),
-      row({ id: "exited" }, { id: "thr_idle" }),
-      row({ id: "woke" }, { id: "thr_busy" }),
-      row({ id: "gone" }, { id: "thr_idle" }),
-      row({ id: "unknown" }, { id: "thr_idle" }),
-    ]);
-    expect(result.closed).toEqual(["still"]);
-    expect(result.skipped.map((r) => r.terminal.id).sort()).toEqual(["exited", "gone", "woke"]);
-    expect(result.failed.map((f) => [f.row.terminal.id, f.message])).toEqual([
-      ["unknown", "host offline"],
-    ]);
-    expect(sdk.terminals.close).toHaveBeenCalledTimes(1);
-    // Each running target's thread is asked after its terminal, right before closing.
-    expect(sdk.threads.get).toHaveBeenCalledTimes(2);
   });
 
   it("ACT-6: closes in force mode and fails when the terminal is still running", async () => {
