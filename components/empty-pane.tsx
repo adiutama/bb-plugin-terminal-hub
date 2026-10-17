@@ -1,6 +1,8 @@
 // LIST-25: the main pane with nothing to show, and with nothing running
 // anywhere, a way to start a shell in any environment.
 import type { ReactNode } from "react";
+import { CheckingFolders } from "@/components/environment-rail";
+import { useProjectMenus } from "@/components/folder-states";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -27,7 +29,10 @@ export function EmptyPane({ message, children }: { message: string; children?: R
   );
 }
 
-/** LIST-25: every project's environments, grouped by project in bb's order. */
+/**
+ * LIST-25, LIST-48: every project's environments whose folder may hold a
+ * shell, grouped by project in bb's order, checked when the menu opens.
+ */
 export function NewTerminalMenu({
   snapshot,
   creating,
@@ -37,14 +42,24 @@ export function NewTerminalMenu({
   creating: boolean;
   onCreate: (place: Place) => void;
 }) {
-  const projects = (snapshot.projects ?? []).flatMap((project) => {
-    const environments = snapshot.views.get(project.id)?.environments ?? [];
-    return environments.length > 0 ? [{ project, environments }] : [];
-  });
+  const menus = useProjectMenus(snapshot);
+  const lists = (snapshot.projects ?? []).map((project) => ({
+    project,
+    menu: menus.forProject(project.id),
+  }));
+  const projects = lists.flatMap(({ project, menu }) =>
+    menu.shown.length > 0 ? [{ project, environments: menu.shown }] : [],
+  );
+  const checking = lists.some(({ menu }) => menu.checking);
+  const candidates = lists.reduce((sum, { project }) => {
+    return sum + (snapshot.views.get(project.id)?.environments?.length ?? 0);
+  }, 0);
   return (
-    <DropdownMenu>
+    <DropdownMenu
+      onOpenChange={(open) => open && menus.check(lists.flatMap(({ menu }) => menu.unchecked))}
+    >
       <DropdownMenuTrigger asChild>
-        <Button variant="outline" size="sm" disabled={creating || projects.length === 0}>
+        <Button variant="outline" size="sm" disabled={creating || candidates === 0}>
           <Icon name="Plus" aria-hidden="true" />
           New terminal in…
         </Button>
@@ -71,6 +86,7 @@ export function NewTerminalMenu({
             ))}
           </DropdownMenuGroup>
         ))}
+        {checking ? <CheckingFolders /> : null}
       </DropdownMenuContent>
     </DropdownMenu>
   );
