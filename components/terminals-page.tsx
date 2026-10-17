@@ -11,25 +11,19 @@ import {
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { toast } from "sonner";
 import { ConfirmDialog, RenameDialog } from "@/components/dialogs";
-import { EmptyPane } from "@/components/empty-pane";
+import { EmptyPane, NewTerminalMenu } from "@/components/empty-pane";
 import { EnvironmentRail } from "@/components/environment-rail";
 import { type BarActions, TerminalBar } from "@/components/terminal-bar";
 import { TerminalTabs } from "@/components/terminal-tabs";
 import { TerminalView } from "@/components/terminal-view";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
-import {
-  endedHere,
-  nextSelection,
-  renameTerminal,
-  restartTerminal,
-  settledTargets,
-} from "@/lib/actions";
+import { endedHere, nextSelection, renameTerminal, restartTerminal } from "@/lib/actions";
 import { isNotFound } from "@/lib/errors";
 import { type HubSnapshot, hubFor } from "@/lib/hub";
 import { type HubSdk, message } from "@/lib/hub-store";
-import type { HubRow, TerminalSession } from "@/lib/inventory";
-import { isFindShortcut } from "@/lib/keyboard";
+import { type HubRow, isRunning, type TerminalSession } from "@/lib/inventory";
+import { isFindShortcut, type PageShortcut, pageShortcut } from "@/lib/keyboard";
 import { pageMemoryFor } from "@/lib/page-memory";
 import { folderLabel } from "@/lib/paths";
 import {
@@ -364,7 +358,6 @@ export function TerminalsPage({ subPath }: PluginNavPanelProps) {
   const store = route.projectId ? hub.storeFor(route.projectId) : null;
   const [renaming, setRenaming] = useState<HubRow | null>(null);
   const [closing, setClosing] = useState<{ row: HubRow; order: string[] } | null>(null);
-  const [bulk, setBulk] = useState<{ rows: HubRow[]; order: string[] } | null>(null);
   const [busy, setBusy] = useState(false);
   const [creating, setCreating] = useState(false);
 
@@ -402,59 +395,6 @@ export function TerminalsPage({ subPath }: PluginNavPanelProps) {
     }
   };
 
-  // ACT-5: list the environment again first, so the confirmation lists what
-  // is settled now. The environment must still be selected when that ends.
-  const openCleanup = async () => {
-    const opened = { store, environmentId: route.environmentId };
-    if (!opened.store || !opened.environmentId) return;
-    const ok = await opened.store.refreshEnvironment(opened.environmentId);
-    if (routeRef.current.environmentId !== opened.environmentId) return;
-    if (!ok) {
-      toast.error("Could not check the environment's terminals. Try again in a moment.");
-      return;
-    }
-    const rows =
-      opened.store.getView().sections.find((s) => s.environment.id === opened.environmentId)
-        ?.rows ?? [];
-    const targets = settledTargets(rows);
-    if (targets.length === 0) toast.success("Nothing to close: no terminals from settled threads.");
-    else setBulk({ rows: targets, order: rows.map((row) => row.terminal.id) });
-  };
-
-  const runBulk = async () => {
-    if (!bulk || !store) return;
-    setBusy(true);
-    try {
-      const result = await store.closeAll(bulk.rows);
-      const current = routeRef.current.terminalId;
-      if (current && result.closed.includes(current)) {
-        const remaining = bulk.order.filter((id) => id === current || !result.closed.includes(id));
-        moveOn(current, remaining);
-      }
-      if (result.failed.length > 0) {
-        toast.error(
-          `Could not close ${result.failed.length} of ${bulk.rows.length}: ${result.failed
-            .map((failure) => failure.row.terminal.title || failure.row.terminal.id)
-            .join(", ")}`,
-        );
-      } else {
-        toast.success(
-          `Closed ${result.closed.length} terminal${result.closed.length === 1 ? "" : "s"}`,
-        );
-      }
-      if (result.skipped.length > 0) {
-        toast(
-          `Left ${result.skipped.length} open that ${result.skipped.length === 1 ? "is" : "are"} no longer from a settled thread: ${result.skipped
-            .map((row) => row.terminal.title || row.terminal.id)
-            .join(", ")}`,
-        );
-      }
-    } finally {
-      setBusy(false);
-      setBulk(null);
-    }
-  };
-
   const actions: BarActions = {
     onRename: setRenaming,
     onRestart: async (row) => {
@@ -479,8 +419,38 @@ export function TerminalsPage({ subPath }: PluginNavPanelProps) {
       if (row.terminal.id === selectedId) moveOn(row.terminal.id, tabIds);
     },
     onOpenThread: (threadId) => navigate.toThread(threadId),
-    onCleanup: () => void openCleanup(),
   };
+
+  // LIST-46: a tab's ×, and Mod+W on the selected tab: close a running
+  // terminal (ACT-4, ACT-6), dismiss an ended one (LIST-11).
+  const closeTab = (row: HubRow) =>
+    isRunning(row.terminal) ? actions.onClose(row) : actions.onDismiss(row);
+
+  // LIST-47: Mod+T, Mod+W and Mod+P, taken in the capture phase on window so
+  // the page handles them before bb's shortcuts and the terminal view do.
+  const rootRef = useRef<HTMLDivElement>(null);
+  const shortcuts = useRef<(key: PageShortcut) => void>(() => {});
+  shortcuts.current = (key) => {
+    if (key === "find") {
+      findRef.current?.focus();
+      findRef.current?.select();
+    } else if (key === "close") {
+      if (barRow) closeTab(barRow);
+    } else if (route.projectId && route.environmentId && !creating) {
+      void newTerminal({ projectId: route.projectId, environmentId: route.environmentId });
+    }
+  };
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const key = pageShortcut(event, rootRef.current);
+      if (key === null) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      shortcuts.current(key);
+    };
+    window.addEventListener("keydown", onKeyDown, { capture: true });
+    return () => window.removeEventListener("keydown", onKeyDown, { capture: true });
+  }, []);
 
   // ── layout ────────────────────────────────────────────────────────────
 
@@ -495,14 +465,13 @@ export function TerminalsPage({ subPath }: PluginNavPanelProps) {
     : "";
   const showsEnvironment = route.environmentId !== null && (section !== undefined || lookedUp);
 
-  const emptyMessage =
-    order.length > 0
-      ? "Looking for terminals…"
-      : snapshot.succeeded
-        ? "Nothing running. Start a shell from a project's +."
-        : snapshot.failed
-          ? "Could not list every terminal yet; trying again shortly."
-          : "Looking for terminals…";
+  // LIST-25: the sentence for the state, and once complete a way to start a shell.
+  const nothingRuns = order.length === 0 && snapshot.succeeded;
+  const emptyMessage = nothingRuns
+    ? "Nothing running."
+    : order.length === 0 && snapshot.failed
+      ? "Could not list every terminal yet; trying again shortly."
+      : "Looking for terminals…";
 
   return (
     // LIST-44: `/` from anywhere in the page focuses the find field. The root
@@ -510,6 +479,7 @@ export function TerminalsPage({ subPath }: PluginNavPanelProps) {
     // counts as focused without making the root a Tab stop.
     // biome-ignore lint/a11y/noStaticElementInteractions: the handler acts on `/` only.
     <div
+      ref={rootRef}
       tabIndex={-1}
       className="flex h-full min-h-0 flex-1 outline-none"
       onKeyDown={(event) => {
@@ -546,6 +516,7 @@ export function TerminalsPage({ subPath }: PluginNavPanelProps) {
             hints={view?.hints ?? new Map()}
             environmentName={environment?.name ?? route.environmentId}
             creating={creating}
+            onClose={closeTab}
             onSelect={(terminalId) => {
               setMissing(null);
               go({ ...route, terminalId }, false);
@@ -585,7 +556,6 @@ export function TerminalsPage({ subPath }: PluginNavPanelProps) {
               hint={view?.hints.get(selectedId)}
               spawnedBy={spawnedBy}
               now={now}
-              cleanupCount={settledTargets(listedRows).length}
               actions={actions}
             />
             {/* VIEW-10: the inset lies outside the element the view measures. */}
@@ -627,7 +597,15 @@ export function TerminalsPage({ subPath }: PluginNavPanelProps) {
           </div>
         ) : showsEnvironment ? null : (
           // LIST-25: the sentence for the state.
-          <EmptyPane message={emptyMessage} />
+          <EmptyPane message={emptyMessage}>
+            {nothingRuns ? (
+              <NewTerminalMenu
+                snapshot={snapshot}
+                creating={creating}
+                onCreate={(place) => void newTerminal(place)}
+              />
+            ) : null}
+          </EmptyPane>
         )}
       </main>
       <RenameDialog
@@ -667,27 +645,6 @@ export function TerminalsPage({ subPath }: PluginNavPanelProps) {
         onCancel={() => setClosing(null)}
         onConfirm={() => closing && void doClose(closing.row, closing.order)}
       />
-      <ConfirmDialog
-        open={bulk !== null}
-        title="Close terminals from settled threads?"
-        description="These terminals belong to threads that are no longer active. Anything running in them stops."
-        confirmLabel={`Close ${bulk?.rows.length ?? 0}`}
-        busy={busy}
-        onCancel={() => setBulk(null)}
-        onConfirm={() => void runBulk()}
-      >
-        <ul className="max-h-60 overflow-y-auto rounded-md border border-border text-sm">
-          {(bulk?.rows ?? []).map((row) => (
-            <li
-              key={row.terminal.id}
-              className="border-b border-border px-3 py-1.5 last:border-b-0"
-            >
-              <span className="font-medium">{row.terminal.title || "Terminal"}</span>
-              <span className="text-muted-foreground"> · “{row.thread?.title}”</span>
-            </li>
-          ))}
-        </ul>
-      </ConfirmDialog>
     </div>
   );
 }

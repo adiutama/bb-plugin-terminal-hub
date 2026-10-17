@@ -1,8 +1,7 @@
-// Every project's store together, for the Terminals page and its title bar.
+// Every project's store together, for the Terminals page.
 //
 // While the page is shown, every project's store runs (LIST-8), and the one
-// holding the selected environment polls it more often. The title bar reads
-// the same snapshot and never starts requests of its own.
+// holding the selected environment polls it more often.
 import {
   createGate,
   type Gate,
@@ -34,6 +33,8 @@ export interface HubSnapshot {
   views: ReadonlyMap<string, HubView>;
   /** LIST-27: something shown is kept from before a return, not yet confirmed. */
   lastKnown: boolean;
+  /** LIST-27: bb's realtime connection is down. */
+  reconnecting: boolean;
   /** LIST-17, LIST-25: every project's listing has succeeded this visit. */
   succeeded: boolean;
   /** LIST-25: a listing failed this visit. */
@@ -178,6 +179,7 @@ export class Hub {
       projectsError: this.projectsError,
       views,
       lastKnown: all.some((view) => view.lastKnown),
+      reconnecting: all.some((view) => view.reconnecting),
       succeeded: listed && all.every((view) => view.succeeded),
       failed: this.projectsError !== null || all.some((view) => view.failed),
       progress: this.everListed

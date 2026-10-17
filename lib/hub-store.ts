@@ -5,13 +5,7 @@
 // again. While the page is shown every project's store runs (LIST-8); the one
 // holding the selected environment polls it more often. `lib/hub.ts` puts the
 // stores together for the rail and the title bar.
-import {
-  type ActionsSdk,
-  type BulkCloseResult,
-  closeAll,
-  closeTerminal,
-  type VerifySdk,
-} from "./actions";
+import { type ActionsSdk, closeTerminal } from "./actions";
 import { isNotFound } from "./errors";
 import {
   type EnvironmentSnapshot,
@@ -128,7 +122,7 @@ interface ThreadNeeds {
   deleted: boolean;
 }
 
-export interface HubSdk extends InventorySdk, ActionsSdk, VerifySdk {
+export interface HubSdk extends InventorySdk, ActionsSdk {
   terminals: {
     get(args: { terminalId: string }): Promise<TerminalSession>;
     output(args: {
@@ -201,6 +195,8 @@ export interface HubView {
   ready: boolean;
   /** LIST-27: rows kept from before a return that are not yet confirmed. */
   lastKnown: boolean;
+  /** LIST-27: bb's realtime connection is down. */
+  reconnecting: boolean;
   /** NAV-5, LIST-28: listed terminals bb no longer has. */
   vanished: ReadonlySet<string>;
 }
@@ -628,7 +624,7 @@ export class HubStore {
   }
 
   /**
-   * LIST-28, ACT-5: one environment, all of it (its own terminals, its
+   * LIST-28: one environment, all of it (its own terminals, its
    * threads and theirs); one request at a time. True when it was listed.
    */
   refreshEnvironment(environmentId: string): Promise<boolean> {
@@ -1182,13 +1178,6 @@ export class HubStore {
     this.forget(terminalId);
   }
 
-  /** ACT-5: closes the rows whose threads are still settled when checked again. */
-  async closeAll(rows: readonly HubRow[]): Promise<BulkCloseResult> {
-    const result = await closeAll(this.sdk, rows);
-    for (const id of result.closed) this.forget(id);
-    return result;
-  }
-
   private forget(terminalId: string): void {
     this.gone.add(terminalId);
     this.retained.delete(terminalId);
@@ -1335,6 +1324,7 @@ export class HubStore {
       succeeded: this.isConfirmed() && !lastKnown,
       ready: this.everListed || this.currentError() !== null,
       lastKnown,
+      reconnecting: !connected,
       vanished: new Set(this.vanished),
     };
   }

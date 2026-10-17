@@ -95,7 +95,7 @@ export interface EnvironmentSnapshot {
 }
 
 /**
- * VIEW-9, ACT-5. `starting` and `stopping` are a turn in progress, so they count as
+ * VIEW-9. `starting` and `stopping` are a turn in progress, so they count as
  * active. `pending` is a thread that has never run, so it counts as idle.
  */
 export function threadState(thread: ThreadRecord): ThreadState {
@@ -159,13 +159,9 @@ export function orderedRows(grouped: GroupedEnvironment): HubRow[] {
   return [...grouped.environment, ...grouped.threads.flatMap((group) => group.rows)];
 }
 
-/**
- * LIST-12: the tabs' order: environment terminals, then thread terminals,
- * each group oldest first by creation time.
- */
+/** LIST-12: the tabs' order: creation order, oldest first, whatever the scope. */
 export function tabOrder(grouped: GroupedEnvironment): HubRow[] {
-  const threadRows = grouped.threads.flatMap((group) => group.rows).sort(byCreation);
-  return [...grouped.environment, ...threadRows];
+  return orderedRows(grouped).sort(byCreation);
 }
 
 export function runningCount(grouped: GroupedEnvironment): number {

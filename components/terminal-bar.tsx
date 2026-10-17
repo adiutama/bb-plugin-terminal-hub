@@ -7,7 +7,6 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Icon } from "@/components/ui/icon";
@@ -26,8 +25,6 @@ export interface BarActions {
   onClose: (row: HubRow) => void;
   onDismiss: (row: HubRow) => void;
   onOpenThread: (threadId: string) => void;
-  /** ACT-5: for the selected environment. */
-  onCleanup: () => void;
 }
 
 /** VIEW-9: "idle 2h", "error 5m", "archived"; nothing while active. */
@@ -50,7 +47,6 @@ export function TerminalBar({
   hint,
   spawnedBy,
   now,
-  cleanupCount,
   actions,
 }: {
   row: HubRow;
@@ -62,8 +58,6 @@ export function TerminalBar({
   /** The title of the thread that spawned the owning thread, if any. */
   spawnedBy: string | null;
   now: number;
-  /** ACT-5: running thread terminals of settled threads in this environment. */
-  cleanupCount: number;
   actions: BarActions;
 }) {
   const { terminal, thread } = row;
@@ -156,10 +150,6 @@ export function TerminalBar({
               onSelect={() => (running ? actions.onClose(row) : actions.onDismiss(row))}
             >
               {running ? "Close" : "Dismiss"}
-            </DropdownMenuItem>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem disabled={cleanupCount === 0} onSelect={actions.onCleanup}>
-              Close terminals from settled threads…
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
