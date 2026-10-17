@@ -1,9 +1,9 @@
 # A Services page lists servers running in environment folders outside bb terminals
 
-- Status: accepted
+- Status: superseded
 - Date: 2026-10-17
 - Supersedes: none
-- Superseded by: none
+- Superseded by: 202610171646
 - Applies to: docs/specs/services.md, docs/specs/navigation.md, docs/specs/agent-surface.md, server.ts, app.tsx, skills/terminal-hub/SKILL.md, README.md
 
 ## Context

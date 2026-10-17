@@ -18,7 +18,7 @@ part of the URL after the page path (`subPath`) carries the selection.
 
 ## Rules
 
-- **NAV-1** The plugin registers one `navPanel` titled "Terminals" at path `terminals`, so the page lives at `/plugins/terminal-hub/terminals`.
+- **NAV-1** The plugin registers a `navPanel` titled "Terminals" at path `terminals`, so the page lives at `/plugins/terminal-hub/terminals`. (The Services page is SVC-1.)
 - **NAV-2** The URL carries the selected project, environment, and terminal; reloading the page restores all three. (ADR 202610171617)
 - **NAV-3** Selecting a terminal or an environment adds a history entry, so back and forward move between previously selected shells and environments. (ADR 202610171617)
 - **NAV-4** Opening the page without an environment in the URL selects, in order: the environment of the thread bb was showing (`useBbContext`), if the rail lists it; the environment the page last showed since bb loaded, if listed; else the first environment the rail lists (LIST-33). It then selects that environment's remembered tab (LIST-36). The choice replaces the history entry. Until the rail is listed, the page waits rather than choosing. (ADR 202610171617)
