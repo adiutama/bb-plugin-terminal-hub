@@ -11,8 +11,9 @@ import {
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { toast } from "sonner";
 import { ConfirmDialog, RenameDialog } from "@/components/dialogs";
-import { EmptyPane, NewTerminalMenu } from "@/components/empty-pane";
+import { EmptyPane } from "@/components/empty-pane";
 import { EnvironmentRail } from "@/components/environment-rail";
+import { NewTerminalMenu } from "@/components/new-terminal-menu";
 import { type BarActions, TerminalBar } from "@/components/terminal-bar";
 import { TerminalTabs } from "@/components/terminal-tabs";
 import { TerminalView } from "@/components/terminal-view";
@@ -23,7 +24,6 @@ import { isNotFound } from "@/lib/errors";
 import { type HubSnapshot, hubFor } from "@/lib/hub";
 import { type HubSdk, message } from "@/lib/hub-store";
 import { type HubRow, isRunning, type TerminalSession } from "@/lib/inventory";
-import { isFindShortcut, type PageShortcut, pageShortcut } from "@/lib/keyboard";
 import { pageMemoryFor } from "@/lib/page-memory";
 import { folderLabel } from "@/lib/paths";
 import {
@@ -149,20 +149,22 @@ export function TerminalsPage({ subPath }: PluginNavPanelProps) {
     hub.setConnection(connection);
   }, [hub, connection]);
 
+  // NAV-8: selections the page makes on its own replace the entry; each is
+  // asked once, and never for where the page is already going, so a render
+  // before the router follows does not ask again.
+  const requested = useRef<string | null>(null);
+  if (requested.current === subPath) requested.current = null;
   const go = useCallback(
     (next: Route, replace: boolean) => {
-      navigate.toPluginPanel(PANEL_PATH, { subPath: formatRoute(next), replace });
+      const target = formatRoute(next);
+      requested.current = target;
+      navigate.toPluginPanel(PANEL_PATH, { subPath: target, replace });
     },
     [navigate],
   );
-  // NAV-8: selections the page makes on its own replace the entry; asked
-  // once, so a render before the router follows does not ask again.
-  const requested = useRef<string | null>(null);
-  if (requested.current === subPath) requested.current = null;
   const goAuto = (next: Route) => {
     const target = formatRoute(next);
     if (target === subPath || requested.current === target) return;
-    requested.current = target;
     go(next, true);
   };
   const placeRoute = (place: Place): Route => ({
@@ -426,32 +428,6 @@ export function TerminalsPage({ subPath }: PluginNavPanelProps) {
   const closeTab = (row: HubRow) =>
     isRunning(row.terminal) ? actions.onClose(row) : actions.onDismiss(row);
 
-  // LIST-47: Mod+T, Mod+W and Mod+P, taken in the capture phase on window so
-  // the page handles them before bb's shortcuts and the terminal view do.
-  const rootRef = useRef<HTMLDivElement>(null);
-  const shortcuts = useRef<(key: PageShortcut) => void>(() => {});
-  shortcuts.current = (key) => {
-    if (key === "find") {
-      findRef.current?.focus();
-      findRef.current?.select();
-    } else if (key === "close") {
-      if (barRow) closeTab(barRow);
-    } else if (route.projectId && route.environmentId && !creating) {
-      void newTerminal({ projectId: route.projectId, environmentId: route.environmentId });
-    }
-  };
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      const key = pageShortcut(event, rootRef.current);
-      if (key === null) return;
-      event.preventDefault();
-      event.stopImmediatePropagation();
-      shortcuts.current(key);
-    };
-    window.addEventListener("keydown", onKeyDown, { capture: true });
-    return () => window.removeEventListener("keydown", onKeyDown, { capture: true });
-  }, []);
-
   // ── layout ────────────────────────────────────────────────────────────
 
   const projectName = snapshot.projects?.find((p) => p.id === route.projectId)?.name ?? null;
@@ -474,22 +450,7 @@ export function TerminalsPage({ subPath }: PluginNavPanelProps) {
       : "Looking for terminals…";
 
   return (
-    // LIST-44: `/` from anywhere in the page focuses the find field. The root
-    // takes focus from clicks on blank space (tabIndex -1), so the page
-    // counts as focused without making the root a Tab stop.
-    // biome-ignore lint/a11y/noStaticElementInteractions: the handler acts on `/` only.
-    <div
-      ref={rootRef}
-      tabIndex={-1}
-      className="flex h-full min-h-0 flex-1 outline-none"
-      onKeyDown={(event) => {
-        if (!isFindShortcut(event)) return;
-        event.preventDefault();
-        event.stopPropagation();
-        findRef.current?.focus();
-        findRef.current?.select();
-      }}
-    >
+    <div className="flex h-full min-h-0 flex-1">
       <EnvironmentRail
         snapshot={snapshot}
         groups={groups}
@@ -603,7 +564,13 @@ export function TerminalsPage({ subPath }: PluginNavPanelProps) {
                 snapshot={snapshot}
                 creating={creating}
                 onCreate={(place) => void newTerminal(place)}
-              />
+                align="center"
+              >
+                <Button variant="outline" size="sm" disabled={creating}>
+                  <Icon name="Plus" aria-hidden="true" />
+                  New terminal in…
+                </Button>
+              </NewTerminalMenu>
             ) : null}
           </EmptyPane>
         )}
