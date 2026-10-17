@@ -2,7 +2,7 @@
 
 - Status: implemented
 - Prefix: AGENT
-- Decisions: 202610100907, 202610100908
+- Decisions: 202610100907, 202610100908, 202610171646
 
 What the plugin gives agents, so the processes they start show up in the hub
 and they stop starting duplicates.
@@ -10,7 +10,9 @@ and they stop starting duplicates.
 ## Behaviour
 
 The plugin ships a skill and a CLI command. The skill tells agents when to use
-environment scope and to check the CLI before starting something long-running.
+environment scope and to check the CLI before starting something long-running:
+`bb terminal-hub list` for terminals, `bb terminal-hub services` for servers
+running outside them (the Services page's list).
 
 ## Rules
 
@@ -20,4 +22,6 @@ environment scope and to check the CLI before starting something long-running.
 - **AGENT-4** `bb terminal-hub list` defaults to the calling thread's environment (`$BB_ENVIRONMENT_ID`) and accepts `--environment <id>` to choose another. Without either, it exits with an error that says to pass `--environment`. (ADR 202610100908)
 - **AGENT-5** `bb terminal-hub list --json` prints machine-readable output with each terminal's id, title, status, scope, thread, and server hint. (ADR 202610100908)
 - **AGENT-6** The skill tells agents to leave environment-scoped long-running processes running when their own work is done, unless the user asks them to stop; cleanup is the user's call through the hub. (ADR 202610100907)
-
+- **AGENT-7** `bb terminal-hub services` prints the processes the Services page lists for one environment, chosen as AGENT-4 chooses it, each with its ports, PID, command line, starting thread, and log path. (ADR 202610171646)
+- **AGENT-8** `bb terminal-hub services --json` prints them machine-readable: each process's pid, ports, command, startedAt, threadId, logPath, and environmentId. (ADR 202610171646)
+- **AGENT-9** The skill tells agents to run `bb terminal-hub services` as well as `bb terminal-hub list` before starting a server, and to reuse a listed server instead of starting a duplicate. (ADR 202610171646)
