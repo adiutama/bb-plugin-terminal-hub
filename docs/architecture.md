@@ -40,6 +40,7 @@ useSdk().terminals ◄──► lib/terminal-transport.ts ◄──► lib/pump.
 | `lib/hub-store.ts` | One project's data, one store per project kept for the app session: environment names (LIST-34), refresh cadence, last-known vs confirmed rows after a return, exited-row retention, server hints, home directories, actions. |
 | `lib/hub.ts` | Every project's store together: attaches them all while the page is shown (the selected project first), the project list, and the snapshot the page reads. |
 | `lib/rail.ts` | What the rail lists (LIST-33), what "Find environment" leaves (LIST-42), the environment the page selects on its own (NAV-4, LIST-37). |
+| `lib/folders.ts`, `components/folder-states.ts` | Whether an environment's folder still exists (`hosts.directory`), checked when a "New terminal in…" menu opens and kept until bb reloads; what each menu lists (LIST-48). |
 | `lib/page-memory.ts` | Where the user was until bb reloads: the environment last shown, each environment's last tab, folded projects, the rail's scroll anchor, the find text. |
 | `lib/actions.ts` | Close (force, checked), rename, restart, and the next tab after a close. |
 | `lib/route.ts` | `subPath` ⇄ project, environment, terminal. |
