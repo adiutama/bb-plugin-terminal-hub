@@ -643,7 +643,7 @@ function LogDrawer({
       className="flex h-[40%] min-h-[160px] shrink-0 flex-col border-t border-foreground/8 bg-background"
     >
       <div className="flex h-9 shrink-0 items-center gap-2 border-b border-foreground/8 pl-4 pr-2 text-[12px]">
-        <span className="min-w-0 shrink truncate font-mono" title={service.command}>
+        <span className="min-w-0 max-w-[45%] shrink-0 truncate font-mono" title={service.command}>
           {service.command}
         </span>
         {path ? (
