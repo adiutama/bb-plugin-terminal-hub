@@ -1,13 +1,14 @@
 // @vitest-environment jsdom
-import type { PluginNavPanelProps } from "@get-bb/plugin-sdk/app";
-import { renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
-import type { ComponentType } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { FORCE_STOP_AFTER_MS, SERVICES_REFRESH_MS } from "../components/services-page";
+import {
+  COUNT_REFRESH_MS,
+  FORCE_STOP_AFTER_MS,
+  SERVICES_REFRESH_MS,
+} from "../components/services-page";
 import type { World } from "./fixtures/fake-bb";
 import { type Machine, STARTED_AT } from "./fixtures/fake-host";
-import { loadApp, openMenu } from "./fixtures/page";
+import { loadApp, mountPage, openMenu, stopFollowing } from "./fixtures/page";
 import {
   disposeServers,
   servicesMachine,
@@ -46,6 +47,7 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  stopFollowing();
   cleanup();
   vi.useRealTimers();
   vi.unstubAllGlobals();
@@ -53,21 +55,26 @@ afterEach(async () => {
   await disposeServers();
 });
 
-/** The Services page over a server running on `m`, its RPC wired through. */
-async function mountServices(w: World = servicesWorld(), m: Machine = servicesMachine()) {
+/** The title bar's Services button (SVC-1). */
+const servicesButton = () =>
+  within(screen.getByTestId("title-bar")).getByRole("button", { name: /^Services/ });
+
+/**
+ * The Terminals page and its title bar over a server running on `m`, its RPC
+ * wired through; with `open`, switched to the Services view.
+ */
+async function mountServices(
+  w: World = servicesWorld(),
+  m: Machine = servicesMachine(),
+  { open = true }: { open?: boolean } = {},
+) {
   const server = await startServer(w, m);
-  const app = await loadApp();
-  const panel = app.navPanels.find((p) => p.id === "services");
-  if (!panel) throw new Error("no Services navPanel");
   const rpc = Object.fromEntries(
     METHODS.map((method) => [method, vi.fn((input: unknown) => server.call(method, input))]),
   );
-  const slot = renderSlot(
-    { component: panel.component as ComponentType<PluginNavPanelProps> },
-    { subPath: "" },
-    { rpc: rpc as any, context: { projectId: null, threadId: null } },
-  );
-  return { slot, server, rpc };
+  const page = await mountPage(w, "", { projectId: null }, undefined, rpc);
+  if (open) fireEvent.click(servicesButton());
+  return { slot: page.slot, page, server, rpc };
 }
 
 const table = () => screen.getByRole("table", { name: "Services" });
@@ -88,12 +95,33 @@ async function advance(ms: number) {
 }
 
 describe("services page", () => {
-  it("SVC-1: registers a navPanel titled Services at path services", async () => {
+  it("SVC-1: no page for services; the Terminals page's title bar holds the Services button", async () => {
     const app = await loadApp();
-    expect(app.navPanels.find((p) => p.id === "services")).toMatchObject({
-      title: "Services",
-      path: "services",
-    });
+    expect(app.navPanels.map((p) => p.id)).toEqual(["terminals"]);
+    expect(app.navPanels[0]?.headerContent).toBeTypeOf("function");
+  });
+
+  it("SVC-1: the button shows the count, switches the main view to Services and back, pressed while shown; the rail stays", async () => {
+    await mountServices(servicesWorld(), servicesMachine(), { open: false });
+    await waitFor(() => expect(servicesButton()).toHaveTextContent("Services3"));
+    expect(servicesButton()).toHaveAttribute("aria-pressed", "false");
+    expect(screen.queryByRole("region", { name: "Services" })).toBeNull();
+    fireEvent.click(servicesButton());
+    expect(servicesButton()).toHaveAttribute("aria-pressed", "true");
+    expect(await screen.findByRole("table", { name: "Services" })).toBeInTheDocument();
+    expect(screen.getByRole("navigation", { name: "Environments" })).toBeInTheDocument();
+    fireEvent.click(servicesButton());
+    expect(servicesButton()).toHaveAttribute("aria-pressed", "false");
+    expect(screen.queryByRole("region", { name: "Services" })).toBeNull();
+  });
+
+  it("SVC-1: with no listed service, the button shows no count", async () => {
+    const m = servicesMachine();
+    m.processes = m.processes.filter((p) => ![48345, 33438, 51002].includes(p.pid));
+    const { rpc } = await mountServices(servicesWorld(), m, { open: false });
+    await waitFor(() => expect(listCalls(rpc)).toBe(1));
+    await act(async () => {});
+    expect(servicesButton()).toHaveTextContent(/^Services$/);
   });
 
   it("SVC-4: one full-width table with port, process, started by, PID, up, and actions; a row per process", async () => {
@@ -396,38 +424,70 @@ describe("services page", () => {
     expect(table().querySelector('[data-service-pid="33438"]')).toBeNull();
   });
 
-  it("SVC-10: the list refreshes every 5 seconds while the page is visible, and not while it is hidden", async () => {
+  it("SVC-10: 5 seconds while the Services view shows, the count every 30 seconds otherwise, nothing while hidden", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: false });
-    const { rpc, slot } = await mountServices();
+    const { rpc, slot } = await mountServices(servicesWorld(), servicesMachine(), {
+      open: false,
+    });
     await advance(0);
     expect(listCalls(rpc)).toBe(1);
-    await advance(SERVICES_REFRESH_MS);
+    await advance(COUNT_REFRESH_MS - 1);
+    expect(listCalls(rpc)).toBe(1);
+    await advance(1);
     expect(listCalls(rpc)).toBe(2);
+    // Showing Services scans at once, then every 5 s.
+    fireEvent.click(servicesButton());
+    await advance(0);
+    expect(listCalls(rpc)).toBe(3);
+    await advance(SERVICES_REFRESH_MS);
+    expect(listCalls(rpc)).toBe(4);
     visibility = "hidden";
     act(() => {
       document.dispatchEvent(new Event("visibilitychange"));
     });
-    await advance(SERVICES_REFRESH_MS * 4);
-    expect(listCalls(rpc)).toBe(2);
+    await advance(COUNT_REFRESH_MS * 2);
+    expect(listCalls(rpc)).toBe(4);
     visibility = "visible";
     act(() => {
       document.dispatchEvent(new Event("visibilitychange"));
     });
     await advance(0);
-    expect(listCalls(rpc)).toBe(3);
+    expect(listCalls(rpc)).toBe(5);
+    // Back to the terminals: the count's 30 s again.
+    fireEvent.click(servicesButton());
+    await advance(SERVICES_REFRESH_MS * 2);
+    expect(listCalls(rpc)).toBe(5);
+    await advance(COUNT_REFRESH_MS);
+    expect(listCalls(rpc)).toBe(6);
     // Leaving the page stops it.
     slot.lifecycle.unmount();
-    await advance(SERVICES_REFRESH_MS * 4);
-    expect(listCalls(rpc)).toBe(3);
+    await advance(COUNT_REFRESH_MS * 4);
+    expect(listCalls(rpc)).toBe(6);
   });
 
-  it("SVC-21: the page opens with nothing selected, and selecting a row adds no history entry", async () => {
-    const { slot } = await mountServices();
+  it("SVC-21: the URL carries no view nor row; the view opens with nothing selected, and switching or selecting adds no history entry", async () => {
+    const { slot, page } = await mountServices();
     await screen.findByRole("table", { name: "Services" });
     expect(table().querySelector("[data-selected]")).toBeNull();
     expect(screen.queryByRole("region", { name: "Log" })).toBeNull();
     fireEvent.click(row(33438));
     fireEvent.click(row(51002));
+    // Back and forth: the view opens anew, with nothing selected.
+    fireEvent.click(servicesButton());
+    fireEvent.click(servicesButton());
+    expect(await screen.findByRole("table", { name: "Services" })).toBeInTheDocument();
+    expect(table().querySelector("[data-selected]")).toBeNull();
+    expect(page.subPath()).toBe("");
     expect(slot.inspection.navigateCalls).toEqual([]);
+  });
+
+  it("SVC-21: reloading shows the terminals", async () => {
+    await mountServices();
+    await screen.findByRole("table", { name: "Services" });
+    cleanup();
+    // A reload starts a new app, with a new SDK.
+    await mountServices(servicesWorld(), servicesMachine(), { open: false });
+    expect(servicesButton()).toHaveAttribute("aria-pressed", "false");
+    expect(screen.queryByRole("region", { name: "Services" })).toBeNull();
   });
 });

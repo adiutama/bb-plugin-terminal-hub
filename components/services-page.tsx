@@ -1,15 +1,24 @@
-// The Services page: the servers running in bb environments outside bb
-// terminals, as one full-width table grouped by environment, with the
-// selected process's log in a drawer below it (ADR 202610171646). The server
-// entry scans and signals the processes; the page asks it over plugin RPC.
-// Nothing here lives in the URL (SVC-21).
+// Services: the servers running in bb environments outside bb terminals, as
+// one full-width table grouped by environment, with the selected process's
+// log in a drawer below it. Shown as the Terminals page's main view from a
+// button in its title bar (ADR 202610171823). The server entry scans and
+// signals the processes; the page asks it over plugin RPC. Nothing here lives
+// in the URL (SVC-21).
 import {
   experimental_copyToClipboard,
   type PluginNavPanelProps,
   useBbNavigate,
   useRpc,
+  useSdk,
 } from "@get-bb/plugin-sdk/app";
-import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
+import {
+  type ReactNode,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { toast } from "sonner";
 import { ConfirmDialog } from "@/components/dialogs";
 import { EmptyPane } from "@/components/empty-pane";
@@ -31,18 +40,21 @@ import type {
   ServicesList,
   StopExpectation,
 } from "@/lib/services-contract";
+import { type ServicesStore, servicesStoreFor } from "@/lib/services-store";
 import { filterGroups, findWords, serviceCount, serviceKey } from "@/lib/services-view";
 import { formatAgo } from "@/lib/time";
 import { cn } from "@/lib/utils";
 
-/** SVC-10: how often the list is scanned while the page is visible. */
+/** SVC-10: how often the list is scanned while the Services view is shown. */
 export const SERVICES_REFRESH_MS = 5_000;
+/** SVC-10: how often the button's count is refreshed otherwise. */
+export const COUNT_REFRESH_MS = 30_000;
 /** SVC-5: how often the drawer's log is read while shown. */
 export const LOG_REFRESH_MS = 2_000;
 /** SVC-9: how long after Stop a process still listed offers Force stop. */
 export const FORCE_STOP_AFTER_MS = 5_000;
 
-type Rpc = ReturnType<typeof useRpc<ServicesContract>>;
+export type Rpc = ReturnType<typeof useRpc<ServicesContract>>;
 
 /** Row icon buttons: 28px, 36px on a coarse pointer. */
 const ACTION_BUTTON_CLASS =
@@ -53,49 +65,73 @@ export function serviceUrl(port: number): string {
   return `http://127.0.0.1:${port}`;
 }
 
-function useVisible(): boolean {
-  const [visible, setVisible] = useState(() => document.visibilityState !== "hidden");
-  useEffect(() => {
-    const update = () => setVisible(document.visibilityState !== "hidden");
-    document.addEventListener("visibilitychange", update);
-    return () => document.removeEventListener("visibilitychange", update);
-  }, []);
-  return visible;
-}
-
 /**
- * SVC-10: the list, scanned when the page opens and every 5 s while it is
- * visible; one scan at a time, none while hidden.
+ * SVC-10: the list, scanned every 5 s while the Services view is shown, and
+ * every 30 s for the button's count while it is not; one scan at a time, none
+ * while the page is hidden. The Terminals page runs it, as it is always
+ * mounted while the button is.
  */
-function useServicesList(rpc: Rpc, visible: boolean) {
-  const [list, setList] = useState<ServicesList | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [nonce, setNonce] = useState(0);
+export function useServicesPolling(rpc: Rpc, store: ServicesStore, visible: boolean) {
+  const { view, nonce } = useSyncExternalStore(store.subscribe, store.getSnapshot);
   const rpcRef = useRef(rpc);
   rpcRef.current = rpc;
-  // biome-ignore lint/correctness/useExhaustiveDependencies: nonce asks for a scan now.
   useEffect(() => {
     if (!visible) return;
+    const interval = view === "services" ? SERVICES_REFRESH_MS : COUNT_REFRESH_MS;
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const scan = async () => {
       try {
         const next = await rpcRef.current.call("services.list", null);
-        if (cancelled) return;
-        setList(next);
-        setError(null);
+        if (!cancelled) store.scanned(next, Date.now());
       } catch (cause) {
-        if (!cancelled) setError(message(cause));
+        if (!cancelled) store.failed(message(cause), Date.now());
       }
-      if (!cancelled) timer = setTimeout(scan, SERVICES_REFRESH_MS);
+      if (!cancelled) timer = setTimeout(scan, interval);
     };
-    void scan();
+    // Due when the last scan is as old as the interval; at once when asked.
+    const last = store.getSnapshot().scannedAt;
+    const asked = nonce !== askedNonce.get(store);
+    askedNonce.set(store, nonce);
+    const due = asked ? 0 : Math.max(0, last + interval - Date.now());
+    timer = setTimeout(scan, due);
     return () => {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [visible, nonce]);
-  return { list, error, refresh: () => setNonce((n) => n + 1) };
+  }, [store, view, visible, nonce]);
+}
+
+/** The refresh request each store last answered. */
+const askedNonce = new WeakMap<ServicesStore, number>();
+
+/**
+ * SVC-1: the "Services" button in the Terminals page's title bar: the number
+ * of listed services when above zero, pressed while the Services view shows.
+ */
+export function ServicesButton(_props: PluginNavPanelProps) {
+  const store = servicesStoreFor(useSdk());
+  const { view, list } = useSyncExternalStore(store.subscribe, store.getSnapshot);
+  const count = list ? serviceCount(list.groups) : 0;
+  const shown = view === "services";
+  return (
+    <Button
+      variant="ghost"
+      size="sm"
+      aria-pressed={shown}
+      aria-label={count > 0 ? `Services, ${count} running` : "Services"}
+      onClick={() => store.toggleView()}
+      className="h-7 gap-1.5 px-2 text-[12.5px] text-muted-foreground [&_[data-icon-root]]:size-3.5"
+    >
+      <Icon name="Server" aria-hidden="true" />
+      Services
+      {count > 0 ? (
+        <span data-services-count="" className="tabular-nums text-foreground/80">
+          {count}
+        </span>
+      ) : null}
+    </Button>
+  );
 }
 
 type LogState =
@@ -143,11 +179,16 @@ async function copy(text: string, what: string) {
   else toast.error(`Could not copy ${what}`);
 }
 
-export function ServicesPage(_props: PluginNavPanelProps) {
+/**
+ * The Services view: the main view of the Terminals page while the title-bar
+ * button is pressed (SVC-1). Its row selection lives here only, so it opens
+ * with nothing selected (SVC-21).
+ */
+export function ServicesView({ store, visible }: { store: ServicesStore; visible: boolean }) {
   const rpc = useRpc<ServicesContract>();
   const navigate = useBbNavigate();
-  const visible = useVisible();
-  const { list, error, refresh } = useServicesList(rpc, visible);
+  const { list, error } = useSyncExternalStore(store.subscribe, store.getSnapshot);
+  const refresh = () => store.refresh();
   const now = useNow(30_000);
   const [find, setFind] = useState("");
 
@@ -310,9 +351,9 @@ export function ServicesPage(_props: PluginNavPanelProps) {
   }
 
   return (
-    <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col bg-background">
+    <section aria-label="Services" className="flex min-h-0 min-w-0 flex-1 flex-col bg-background">
       <header className={cn(BAND_CLASS, "flex items-center gap-3 pl-4 pr-3")}>
-        <h1 className="text-[13px] font-medium">Services</h1>
+        <h2 className="text-[13px] font-medium">Services</h2>
         <label className="ml-auto flex h-7 w-[240px] min-w-0 items-center gap-2 rounded-md bg-foreground/[0.04] px-2 text-muted-foreground focus-within:ring-1 focus-within:ring-ring">
           <Icon name="Search" className="size-3.5 shrink-0" aria-hidden="true" />
           <input
@@ -370,7 +411,7 @@ export function ServicesPage(_props: PluginNavPanelProps) {
           </ul>
         ) : null}
       </ConfirmDialog>
-    </div>
+    </section>
   );
 }
 
