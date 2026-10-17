@@ -7,14 +7,14 @@ How the code is laid out and how data moves through it. The behaviour lives in
 
 | File | Runs in | Does |
 | --- | --- | --- |
-| `server.ts` | bb server | Serves `ghostty-vt.wasm` to the page; scans and signals processes for the Services page over plugin RPC; registers the `bb terminal-hub` CLI. |
-| `app.tsx` | bb app (browser) | Registers the Terminals and Services `navPanel`s. |
+| `server.ts` | bb server | Serves `ghostty-vt.wasm` to the page; scans and signals processes for the Services view over plugin RPC; registers the `bb terminal-hub` CLI. |
+| `app.tsx` | bb app (browser) | Registers the Terminals `navPanel`, with the Services button as its `headerContent`. |
 | `skills/terminal-hub/SKILL.md` | agent threads | Tells agents how to run long-lived processes. |
 
 The Terminals page talks to bb's terminals, threads, environments, and
 projects APIs directly through `useSdk()`, with no plugin RPC: the hub stores
 nothing (ADR 202610101645), so a server hop would only add latency to output
-polling. The Services page has to look at processes on the machine running
+polling. The Services view has to look at processes on the machine running
 bb, which only the server entry can do, so it asks the server over plugin RPC
 (ADR 202610171646).
 
@@ -81,7 +81,7 @@ while away, then list in full. Every write to a list carries the sequence
 number of the request (or action) that produced it, so a late answer never
 replaces newer data.
 
-## Services page and CLI
+## Services view and CLI
 
 ```
 useRpc().call ──► server.ts (bb.rpc) ──► lib/services.ts ──► lib/processes.ts ──► ProcessHost
@@ -109,8 +109,13 @@ useRpc().call ──► server.ts (bb.rpc) ──► lib/services.ts ──► l
   not, so Force stop can reach it (SVC-9). It
   names and orders environments with the Terminals page's helpers (LIST-33,
   LIST-34) and treats `system.config().primaryHostId` as this machine (SVC-11).
-- The page scans every 5 s while visible and reads the selected log every 2 s
-  while the drawer shows it.
+- The title bar's button (`headerContent`) mounts apart from the page, so the
+  two share the main view and the latest list through `lib/services-store.ts`,
+  never the URL. The Terminals page runs the scans: every 5 s while the
+  Services view shows, every 30 s for the button's count otherwise, none while
+  hidden. The terminals' selection stays in the URL meanwhile; their view
+  unmounts, so nothing polls a hidden terminal. The view reads the selected
+  log every 2 s while the drawer shows it.
 
 | File | Role |
 | --- | --- |
@@ -120,7 +125,8 @@ useRpc().call ──► server.ts (bb.rpc) ──► lib/services.ts ──► l
 | `lib/services.ts` | Which listeners are listed and under which environment (SVC-2, SVC-3), thread titles, stop planning and signalling (SVC-19), log tails. |
 | `lib/services-view.ts` | The find field's filter and the running count (SVC-15). |
 | `lib/services-cli.ts` | `bb terminal-hub services`: text and JSON for one environment. |
-| `components/services-page.tsx` | The table, its actions, the stop confirmation, and the log drawer. |
+| `lib/services-store.ts` | The main view (terminals or Services) and the latest list, shared by the title-bar button and the page. |
+| `components/services-page.tsx` | The title-bar button, the scan cadence, and the Services view: table, actions, stop confirmation, and log drawer. |
 
 ## Terminal engine
 

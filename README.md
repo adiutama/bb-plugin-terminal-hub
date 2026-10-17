@@ -3,7 +3,7 @@
 A [BB](https://getbb.app) plugin that adds a **Terminals** page: one place to
 see and control every terminal running in a checkout or worktree, whichever
 thread or agent started it. It sits alongside BB's per-thread terminals and
-does not replace them. A **Services** page lists the servers running in your
+does not replace them. Its **Services** view lists the servers running in your
 checkouts outside bb terminals, such as ones agents started detached.
 
 Requires bb 0.46 or later.
@@ -17,8 +17,7 @@ npm install
 bb plugin install .
 ```
 
-bb builds the pages on install. **Terminals** and **Services** entries appear
-in the rail.
+bb builds the page on install. A **Terminals** entry appears in the rail.
 
 ## Use
 
@@ -77,8 +76,9 @@ alone.
 ### Services
 
 Agents often start servers detached (`nohup … &`, a database's own daemon) so
-they outlive the session; those never show up as terminals. Open **Services**
-from the rail to see them: every process on this machine that listens on a TCP
+they outlive the session; those never show up as terminals. Press **Services**
+in the Terminals page's title bar, beside the close button, to see them in
+place of the terminals (the button shows how many run): every process on this machine that listens on a TCP
 port and belongs to one of your environments, either because an agent of that
 environment started it (bb's `BB_ENVIRONMENT_ID` variable) or because it runs
 inside the environment's folder. Processes with a terminal (a bb terminal,
@@ -97,7 +97,11 @@ stopped.
   when every process in it can be told apart; otherwise only the listener.
   If it is still running 5 seconds later, **Force stop** sends SIGKILL. Before
   any signal, the process is checked to still be the one listed.
-- The list refreshes every 5 seconds while the page is shown. Environments on
+- Press **Services** again, or pick an environment in the rail, to return to
+  the terminals as you left them. The view is not part of the URL, so a
+  reload shows the terminals.
+- The list refreshes every 5 seconds while Services is shown, and the button's
+  count every 30 seconds otherwise. Environments on
   another machine are shown as not checked. It needs `lsof` (macOS and Linux);
   without it the page says so.
 
@@ -114,7 +118,7 @@ before starting a server:
 bb terminal-hub list                      # the calling thread's environment
 bb terminal-hub list --environment env_…  # any environment
 bb terminal-hub list --json               # id, title, status, scope, thread, serverHint
-bb terminal-hub services                  # what the Services page lists for it
+bb terminal-hub services                  # what the Services view lists for it
 bb terminal-hub services --json           # pid, ports, command, startedAt, threadId, logPath
 ```
 

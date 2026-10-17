@@ -30,12 +30,14 @@ leaves the right sidebar untouched.
 - **Deep links**: the route carries project, environment, and terminal, so
   reload and back/forward return to the same shell.
 
-A second page, **Services**, lists servers running in environments outside bb
-terminals (ADR 202610171646): one table grouped by environment, with the
-selected process's log in a drawer below it.
+A **Services** button in the page's title bar switches the main view, right of
+the rail, to the servers running in environments outside bb terminals (ADR
+202610171823): one table grouped by environment, with the selected process's
+log in a drawer below it. Pressing it again, or choosing an environment in the
+rail, returns to the terminals.
 
 ```
-┌ Services ─────────────────────────── [Find…        ]  3 running ┐
+┌ Services (main view) ─────────────── [Find…        ]  3 running ┐
 │ PORT    PROCESS                 STARTED BY      PID     UP       │
 │ kai-platform › thr_6z6iitf6ba-1                                  │
 │ :55401  node apps/api/…         Map all pages   48345   2h ↗ ⧉ ■ │
@@ -51,7 +53,7 @@ selected process's log in a drawer below it.
 | Repo and package | `bb-plugin-terminal-hub` |
 | Plugin id and route | `terminal-hub`, `/plugins/terminal-hub/...` |
 | Display name | Terminal Hub |
-| Rail labels and page headers | Terminals, Services |
+| Rail label and page header | Terminals (with a Services button) |
 
 The name is engine-neutral on purpose, so the renderer can change later.
 
