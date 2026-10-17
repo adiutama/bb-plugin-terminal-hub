@@ -1,6 +1,6 @@
 # Find services by the bb variables they inherit, show the thread that started them, and stop the launch's own group
 
-- Status: proposed
+- Status: accepted
 - Date: 2026-10-17
 - Supersedes: 202610171641
 - Superseded by: none

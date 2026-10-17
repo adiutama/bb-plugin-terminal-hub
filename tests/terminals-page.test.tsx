@@ -181,7 +181,7 @@ function hold<A extends unknown[], R>(method: {
 }
 
 describe("navigation", () => {
-  it("NAV-1: registers one navPanel titled Terminals at path terminals", async () => {
+  it("NAV-1: registers a navPanel titled Terminals at path terminals", async () => {
     const app = await loadApp();
     expect(app.navPanels).toHaveLength(1);
     expect(app.navPanels[0]).toMatchObject({

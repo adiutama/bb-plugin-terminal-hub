@@ -1,6 +1,6 @@
 # Services
 
-- Status: draft
+- Status: agreed
 - Prefix: SVC
 - Decisions: 202610171646
 
@@ -54,8 +54,5 @@ is in the drawer.
 - **SVC-11** Environments on another host are shown as "not checked". (ADR 202610171646)
 - **SVC-12** When `lsof` is not available, the page says detection is unavailable on this machine instead of an empty list. (ADR 202610171646)
 - **SVC-13** The server signals only PIDs it listed in its latest scan. (ADR 202610171646)
-
-## Open questions
-
-- Whether listeners bound only to a Unix socket matter.
-- Whether the URL should carry the selected row; PIDs do not survive restarts.
+- **SVC-20** A process listening only on Unix sockets, with no TCP port, is not listed. (ADR 202610171646)
+- **SVC-21** The URL carries no selected row: the page opens with no row selected and the drawer closed, and selecting a row adds no history entry. (ADR 202610171646)
