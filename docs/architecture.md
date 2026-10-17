@@ -95,7 +95,11 @@ useRpc().call ──► server.ts (bb.rpc) ──► lib/services.ts ──► l
   variables. Everything goes through a `ProcessHost`, so tests answer with
   recorded output and never touch a real process.
 - `lib/services.ts` keeps the latest scan: only PIDs it listed can be signalled
-  (SVC-13), and each signal re-checks the PID's start time first (SVC-8). It
+  (SVC-13), and each signal re-checks the PID's start time first (SVC-8). Stop
+  carries the plan the user confirmed (group or process, target, count) and
+  signals nothing when it no longer matches (SVC-19). A process stopped from
+  the page stays listed while it runs with the same start time, port closed or
+  not, so Force stop can reach it (SVC-9). It
   names and orders environments with the Terminals page's helpers (LIST-33,
   LIST-34) and treats `system.config().primaryHostId` as this machine (SVC-11).
 - The page scans every 5 s while visible and reads the selected log every 2 s

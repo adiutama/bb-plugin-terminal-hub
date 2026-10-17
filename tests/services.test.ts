@@ -155,7 +155,20 @@ describe("services: what is listed", () => {
   it("SVC-11: the machine running bb is bb's primary host; when bb does not say, no environment is checked", async () => {
     const server = await startServer(servicesWorld({ localHostId: null }), servicesMachine());
     const list = await server.call("services.list");
+    expect(list.hostKnown).toBe(false);
+    expect(list.groups).toHaveLength(4);
     expect(list.groups.every((g: any) => !g.checked && g.services.length === 0)).toBe(true);
+  });
+
+  it("SVC-11: when bb's config cannot be read, no environment is checked either", async () => {
+    const server = await startServer(servicesWorld(), servicesMachine());
+    server.sdk.system.config.mockRejectedValue(new Error("offline"));
+    const list = await server.call("services.list");
+    expect(list.hostKnown).toBe(false);
+    expect(list.groups.every((g: any) => !g.checked)).toBe(true);
+    // Asked again on the next scan.
+    server.sdk.system.config.mockResolvedValue({ primaryHostId: "host_1" });
+    expect((await server.call("services.list")).hostKnown).toBe(true);
   });
 
   it("SVC-12: where lsof is not installed, the list says detection is unavailable", async () => {
@@ -164,6 +177,7 @@ describe("services: what is listed", () => {
     const server = await startServer(servicesWorld(), m);
     expect(await server.call("services.list")).toEqual({
       available: false,
+      hostKnown: true,
       groups: [],
       error: null,
     });
@@ -173,9 +187,7 @@ describe("services: what is listed", () => {
 describe("services: stopping", () => {
   it("SVC-8: re-checks the PID's start time, then sends SIGTERM", async () => {
     const { server } = await listed();
-    expect(
-      await server.call("services.stop", { pid: 33438, startedAt: STARTED_AT, force: false }),
-    ).toEqual({ outcome: "signalled", count: 1 });
+    expect(await server.stop(33438, STARTED_AT, false)).toEqual({ outcome: "signalled", count: 1 });
     // Postgres leads its own group (SVC-19).
     expect(server.kills).toEqual([{ target: -33438, signal: "SIGTERM" }]);
   });
@@ -185,9 +197,7 @@ describe("services: stopping", () => {
     // The PID was reused after the scan.
     const pg = server.machine.processes.find((p) => p.pid === 33438)!;
     pg.start = "Sun Oct 18 09:00:00 2026";
-    expect(
-      await server.call("services.stop", { pid: 33438, startedAt: STARTED_AT, force: false }),
-    ).toEqual({ outcome: "changed" });
+    expect(await server.stop(33438, STARTED_AT, false)).toEqual({ outcome: "changed" });
     expect(await server.call("services.plan", { pid: 33438, startedAt: STARTED_AT })).toEqual({
       outcome: "changed",
     });
@@ -198,24 +208,26 @@ describe("services: stopping", () => {
     const { server } = await listed();
     for (const pid of [700, 800, 51000, 48265, 12345]) {
       expect(
-        await server.call("services.stop", { pid, startedAt: STARTED_AT, force: true }),
+        // Even with an expectation that matches what a signal would reach.
+        await server.call("services.stop", {
+          pid,
+          startedAt: STARTED_AT,
+          force: true,
+          expected: { scope: "group", target: pid, count: 1 },
+        }),
       ).toEqual({ outcome: "changed" });
     }
     // Listed once, but not by the latest scan.
     server.machine.processes = server.machine.processes.filter((p) => p.pid !== 33438);
     await server.call("services.list");
     server.machine.processes.push({ pid: 33438, command: "postgres", env: {} });
-    expect(
-      await server.call("services.stop", { pid: 33438, startedAt: STARTED_AT, force: false }),
-    ).toEqual({ outcome: "changed" });
+    expect(await server.stop(33438, STARTED_AT, false)).toEqual({ outcome: "changed" });
     expect(server.kills).toEqual([]);
   });
 
   it("SVC-13: nothing is signalled before a scan has listed it", async () => {
     const server = await startServer(servicesWorld(), servicesMachine());
-    expect(
-      await server.call("services.stop", { pid: 33438, startedAt: STARTED_AT, force: false }),
-    ).toEqual({ outcome: "changed" });
+    expect(await server.stop(33438, STARTED_AT, false)).toEqual({ outcome: "changed" });
     expect(server.kills).toEqual([]);
   });
 
@@ -224,15 +236,17 @@ describe("services: stopping", () => {
     expect(await server.call("services.plan", { pid: 48345, startedAt: API_STARTED })).toEqual({
       outcome: "ready",
       scope: "group",
+      target: 48263,
       commands: [
         "npm run dev",
         "npm exec tsx watch apps/api/src/main.ts",
         "/usr/local/bin/node apps/api/src/main.ts",
       ],
     });
-    expect(
-      await server.call("services.stop", { pid: 48345, startedAt: API_STARTED, force: false }),
-    ).toEqual({ outcome: "signalled", count: 3 });
+    expect(await server.stop(48345, API_STARTED, false)).toEqual({
+      outcome: "signalled",
+      count: 3,
+    });
     expect(server.kills).toEqual([{ target: -48263, signal: "SIGTERM" }]);
     expect(server.machine.processes.some((p) => p.pgid === 48263)).toBe(false);
   });
@@ -297,12 +311,11 @@ describe("services: stopping", () => {
       expect(await server.call("services.plan", { pid, startedAt: STARTED_AT })).toEqual({
         outcome: "ready",
         scope: "process",
+        target: pid,
         commands: [expect.stringMatching(/^node /)],
       });
     }
-    expect(
-      await server.call("services.stop", { pid: 991, startedAt: STARTED_AT, force: false }),
-    ).toEqual({ outcome: "signalled", count: 1 });
+    expect(await server.stop(991, STARTED_AT, false)).toEqual({ outcome: "signalled", count: 1 });
     expect(server.kills).toEqual([{ target: 991, signal: "SIGTERM" }]);
   });
 
@@ -332,18 +345,85 @@ describe("services: stopping", () => {
     m.processes.find((p) => p.pid === 33438)!.ignoresTerm = true;
     const server = await startServer(servicesWorld(), m);
     await server.call("services.list");
-    await server.call("services.stop", { pid: 33438, startedAt: STARTED_AT, force: false });
+    await server.stop(33438, STARTED_AT, false);
     await server.call("services.list");
-    expect(
-      await server.call("services.stop", { pid: 33438, startedAt: STARTED_AT, force: true }),
-    ).toEqual({ outcome: "signalled", count: 1 });
+    expect(await server.stop(33438, STARTED_AT, true)).toEqual({ outcome: "signalled", count: 1 });
     expect(server.kills).toEqual([
       { target: -33438, signal: "SIGTERM" },
       { target: -33438, signal: "SIGKILL" },
     ]);
+    expect(await server.stop(33438, STARTED_AT + 1000, true)).toEqual({ outcome: "changed" });
+  });
+});
+
+describe("services: stopping what was confirmed", () => {
+  it("SVC-19: when the group changed between the confirmation and Stop, nothing is signalled", async () => {
+    const { server } = await listed();
+    const plan = await server.call("services.plan", { pid: 48345, startedAt: API_STARTED });
+    const expected = { scope: plan.scope, target: plan.target, count: plan.commands.length };
+    expect(expected).toEqual({ scope: "group", target: 48263, count: 3 });
+    // The watcher started another process in the group meanwhile.
+    server.machine.processes.push({ pid: 48373, pgid: 48263, command: "esbuild --service" });
     expect(
-      await server.call("services.stop", { pid: 33438, startedAt: STARTED_AT + 1000, force: true }),
+      await server.call("services.stop", {
+        pid: 48345,
+        startedAt: API_STARTED,
+        force: false,
+        expected,
+      }),
     ).toEqual({ outcome: "changed" });
+    // A member now runs in a bb terminal: only the listener would be signalled.
+    server.machine.processes = server.machine.processes.filter((p) => p.pid !== 48373);
+    server.machine.processes.find((p) => p.pid === 48304)!.env = {
+      BB_TERMINAL_SESSION_ID: "term_2",
+    };
+    expect(
+      await server.call("services.stop", {
+        pid: 48345,
+        startedAt: API_STARTED,
+        force: false,
+        expected,
+      }),
+    ).toEqual({ outcome: "changed" });
+    expect(server.kills).toEqual([]);
+  });
+
+  it("SVC-9: a process sent SIGTERM that closed its port but still runs stays listed and can be force-stopped", async () => {
+    const m = servicesMachine();
+    const pg = m.processes.find((p) => p.pid === 33438)!;
+    pg.ignoresTerm = true;
+    const server = await startServer(servicesWorld(), m);
+    await server.call("services.list");
+    expect(await server.stop(33438, STARTED_AT, false)).toEqual({
+      outcome: "signalled",
+      count: 1,
+    });
+    // Shutting down: the port is closed, the process lives on.
+    pg.ports = [];
+    const list = await server.call("services.list");
+    expect(pids(list)).toContain(33438);
+    expect(await server.stop(33438, STARTED_AT, true)).toEqual({
+      outcome: "signalled",
+      count: 1,
+    });
+    expect(server.kills.at(-1)).toEqual({ target: -33438, signal: "SIGKILL" });
+    // Gone: no longer listed, and nothing more is signalled.
+    expect(pids(await server.call("services.list"))).not.toContain(33438);
+    expect(await server.stop(33438, STARTED_AT, true)).toEqual({ outcome: "changed" });
+    expect(server.kills).toHaveLength(2);
+  });
+
+  it("SVC-9, SVC-13: a stopped process whose PID now runs something else is not kept nor signalled", async () => {
+    const m = servicesMachine();
+    m.processes.find((p) => p.pid === 33438)!.ignoresTerm = true;
+    const server = await startServer(servicesWorld(), m);
+    await server.call("services.list");
+    await server.stop(33438, STARTED_AT, false);
+    m.processes = m.processes.filter((p) => p.pid !== 33438);
+    m.processes.push({ pid: 33438, start: "Sun Oct 18 09:00:00 2026", command: "other", env: {} });
+    expect(pids(await server.call("services.list"))).not.toContain(33438);
+    expect(await server.stop(33438, STARTED_AT, true)).toEqual({ outcome: "changed" });
+    expect(server.kills).toEqual([{ target: -33438, signal: "SIGTERM" }]);
   });
 });
 

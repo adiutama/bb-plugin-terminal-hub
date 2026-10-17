@@ -29,6 +29,7 @@ import type {
   ServiceGroup,
   ServicesContract,
   ServicesList,
+  StopExpectation,
 } from "@/lib/services-contract";
 import { filterGroups, findWords, serviceCount, serviceKey } from "@/lib/services-view";
 import { formatAgo } from "@/lib/time";
@@ -184,6 +185,7 @@ export function ServicesPage(_props: PluginNavPanelProps) {
   const [confirming, setConfirming] = useState<{
     service: Service;
     commands: string[];
+    expected: StopExpectation;
   } | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -192,28 +194,48 @@ export function ServicesPage(_props: PluginNavPanelProps) {
     refresh();
   };
 
+  /** SVC-19: what Stop would signal now; null when the process changed. */
+  const planStop = async (service: Service) => {
+    const plan = await rpc.call("services.plan", {
+      pid: service.pid,
+      startedAt: service.startedAt,
+    });
+    if (plan.outcome === "changed") return null;
+    const expected: StopExpectation = {
+      scope: plan.scope,
+      target: plan.target,
+      count: plan.commands.length,
+    };
+    return { commands: plan.commands, expected };
+  };
+
   // SVC-8, SVC-19: ask the server what Stop reaches, then confirm.
   const askStop = async (service: Service) => {
     try {
-      const plan = await rpc.call("services.plan", {
-        pid: service.pid,
-        startedAt: service.startedAt,
-      });
-      if (plan.outcome === "changed") changed();
-      else setConfirming({ service, commands: plan.commands });
+      const plan = await planStop(service);
+      if (plan === null) changed();
+      else setConfirming({ service, ...plan });
     } catch (cause) {
       toast.error(`Could not stop the process: ${message(cause)}`);
     }
   };
 
-  // SVC-8, SVC-9: SIGTERM after confirming; SIGKILL from Force stop.
-  const stop = async (service: Service, force: boolean) => {
+  // SVC-8, SVC-9, SVC-19: SIGTERM to what the confirmation named; SIGKILL
+  // from Force stop, to what the same check names now. Anything else that
+  // changed meanwhile is reported, not signalled.
+  const stop = async (service: Service, force: boolean, confirmed?: StopExpectation) => {
     setBusy(true);
     try {
+      const expected = confirmed ?? (await planStop(service))?.expected;
+      if (!expected) {
+        changed();
+        return;
+      }
       const result = await rpc.call("services.stop", {
         pid: service.pid,
         startedAt: service.startedAt,
         force,
+        expected,
       });
       if (result.outcome === "changed") changed();
       else {
@@ -247,14 +269,11 @@ export function ServicesPage(_props: PluginNavPanelProps) {
         message="Service detection is unavailable on this machine: lsof was not found."
       />
     );
-  } else if (count === 0) {
-    // SVC-17
+  } else if (count === 0 && (groups.length === 0 || words.length > 0)) {
+    // SVC-17, SVC-11
     body = (
-      <EmptyPane icon="Server" message="No servers running in your environments.">
-        <p>
-          Services lists processes listening on a port inside an environment's folder, or started by
-          one of its threads, that are not running in a bb terminal.
-        </p>
+      <EmptyPane icon="Server" message={emptyMessage(list)}>
+        {list.hostKnown ? <p>{EMPTY_EXPLANATION}</p> : null}
       </EmptyPane>
     );
   } else if (groups.length === 0) {
@@ -265,16 +284,28 @@ export function ServicesPage(_props: PluginNavPanelProps) {
     );
   } else {
     body = (
-      <ServicesTable
-        groups={groups}
-        selectedKey={current ? selectedKey : null}
-        now={now}
-        stopState={stopState}
-        onSelect={setSelected}
-        onOpenThread={(threadId) => navigate.toThread(threadId)}
-        onStop={(service) => void askStop(service)}
-        onForceStop={(service) => void stop(service, true)}
-      />
+      <>
+        {count === 0 ? (
+          // SVC-17, SVC-11: nothing listed here, and other hosts are not checked.
+          <div
+            data-services-empty=""
+            className="px-4 pb-2 pt-4 text-[12.5px] text-muted-foreground"
+          >
+            <p className="text-foreground/90">{emptyMessage(list)}</p>
+            {list.hostKnown ? <p>{EMPTY_EXPLANATION}</p> : null}
+          </div>
+        ) : null}
+        <ServicesTable
+          groups={groups}
+          selectedKey={current ? selectedKey : null}
+          now={now}
+          stopState={stopState}
+          onSelect={setSelected}
+          onOpenThread={(threadId) => navigate.toThread(threadId)}
+          onStop={(service) => void askStop(service)}
+          onForceStop={(service) => void stop(service, true)}
+        />
+      </>
     );
   }
 
@@ -323,7 +354,7 @@ export function ServicesPage(_props: PluginNavPanelProps) {
         confirmLabel="Stop"
         busy={busy}
         onCancel={() => setConfirming(null)}
-        onConfirm={() => confirming && void stop(confirming.service, false)}
+        onConfirm={() => confirming && void stop(confirming.service, false, confirming.expected)}
       >
         {confirming && confirming.commands.length > 1 ? (
           <ul
@@ -341,6 +372,16 @@ export function ServicesPage(_props: PluginNavPanelProps) {
       </ConfirmDialog>
     </div>
   );
+}
+
+const EMPTY_EXPLANATION =
+  "Services lists processes listening on a port inside an environment's folder, or started by one of its threads, that are not running in a bb terminal.";
+
+/** SVC-17; SVC-11: without bb's own host, no environment could be checked. */
+function emptyMessage(list: ServicesList): string {
+  return list.hostKnown
+    ? "No servers running in your environments."
+    : "Could not tell which machine bb runs on, so no environment was checked.";
 }
 
 /** SVC-19: how many processes Stop signals. */

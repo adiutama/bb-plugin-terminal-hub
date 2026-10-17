@@ -36,6 +36,8 @@ export const serviceGroupSchema = z.object({
 export const servicesListSchema = z.object({
   /** SVC-12: false where `lsof` is not available. */
   available: z.boolean(),
+  /** SVC-11: bb said which host it runs on; when not, no environment is checked. */
+  hostKnown: z.boolean(),
   /** SVC-14: in LIST-33's order. */
   groups: z.array(serviceGroupSchema),
   /** Why bb's projects or environments could not be listed, if they could not. */
@@ -52,10 +54,21 @@ export const stopPlanSchema = z.discriminatedUnion("outcome", [
     outcome: z.literal("ready"),
     /** SVC-19: the listener's whole process group, or only the listener. */
     scope: z.enum(["group", "process"]),
+    /** The process group, or the listener's PID when only it is signalled. */
+    target: z.number().int(),
     /** SVC-19: how many processes will be signalled, and what they run. */
     commands: z.array(z.string()),
   }),
 ]);
+
+/** SVC-19: what the confirmation said; Stop signals nothing else. */
+const expectedSchema = z
+  .object({
+    scope: z.enum(["group", "process"]),
+    target: z.number().int(),
+    count: z.number().int(),
+  })
+  .strict();
 
 export const servicesContract = defineRpcContract({
   "services.list": { input: z.null(), output: servicesListSchema },
@@ -63,7 +76,7 @@ export const servicesContract = defineRpcContract({
   "services.plan": { input: identitySchema, output: stopPlanSchema },
   /** SVC-8, SVC-9: SIGTERM, or SIGKILL with `force`, after the identity check. */
   "services.stop": {
-    input: identitySchema.extend({ force: z.boolean() }).strict(),
+    input: identitySchema.extend({ force: z.boolean(), expected: expectedSchema }).strict(),
     output: z.discriminatedUnion("outcome", [
       changedSchema,
       z.object({ outcome: z.literal("signalled"), count: z.number().int() }),
@@ -90,4 +103,5 @@ export type Service = z.infer<typeof serviceSchema>;
 export type ServiceGroup = z.infer<typeof serviceGroupSchema>;
 export type ServicesList = z.infer<typeof servicesListSchema>;
 export type StopPlan = z.infer<typeof stopPlanSchema>;
+export type StopExpectation = z.infer<typeof expectedSchema>;
 export type ServicesContract = typeof servicesContract;

@@ -171,10 +171,36 @@ describe("services page", () => {
   it("SVC-17: with nothing listed, the page says so and what it lists", async () => {
     const m = servicesMachine();
     m.processes = m.processes.filter((p) => ![48345, 33438, 51002].includes(p.pid));
-    await mountServices(servicesWorld(), m);
+    const w = servicesWorld();
+    w.environments = w.environments.filter((env) => env.id !== "env_remote");
+    await mountServices(w, m);
     expect(await screen.findByText("No servers running in your environments.")).toBeVisible();
     expect(screen.getByText(/listening on a port inside an environment's folder/)).toBeVisible();
     expect(screen.queryByRole("table")).toBeNull();
+  });
+
+  it("SVC-17, SVC-11: with nothing listed here, environments on other hosts still show as not checked", async () => {
+    const m = servicesMachine();
+    m.processes = m.processes.filter((p) => ![48345, 33438, 51002].includes(p.pid));
+    await mountServices(servicesWorld(), m);
+    expect(await screen.findByText("No servers running in your environments.")).toBeVisible();
+    expect(table()).toHaveTextContent("kai-platform › remote-boxnot checked (other host)");
+    expect(table().querySelectorAll("[data-service-pid]")).toHaveLength(0);
+  });
+
+  it("SVC-11: when bb's own machine cannot be told, the page says no environment was checked, and lists them as not checked", async () => {
+    await mountServices(servicesWorld({ localHostId: null }));
+    expect(
+      await screen.findByText(
+        "Could not tell which machine bb runs on, so no environment was checked.",
+      ),
+    ).toBeVisible();
+    expect(screen.queryByText("No servers running in your environments.")).toBeNull();
+    const notChecked = within(table())
+      .getAllByRole("columnheader")
+      .filter((th) => th.getAttribute("scope") === "colgroup");
+    expect(notChecked).toHaveLength(4);
+    for (const th of notChecked) expect(th).toHaveTextContent("not checked (other host)");
   });
 
   it("SVC-12: without lsof the page says detection is unavailable instead of an empty list", async () => {
@@ -323,6 +349,19 @@ describe("services page", () => {
     await waitFor(() => expect(table().querySelector('[data-service-pid="33438"]')).toBeNull());
   });
 
+  it("SVC-19: when the group changed after the confirmation, Stop signals nothing and refreshes", async () => {
+    const { server, rpc } = await mountServices();
+    await screen.findByRole("table", { name: "Services" });
+    fireEvent.click(within(row(48345)).getByRole("button", { name: /^Stop / }));
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog).toHaveTextContent("Sends SIGTERM to 3 processes");
+    server.machine.processes.push({ pid: 48373, pgid: 48263, command: "esbuild --service" });
+    const before = listCalls(rpc);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Stop" }));
+    await waitFor(() => expect(listCalls(rpc)).toBeGreaterThan(before));
+    expect(server.kills).toEqual([]);
+  });
+
   it("SVC-8: a process that changed since the scan is not signalled; the page says so and refreshes", async () => {
     const { server, rpc } = await mountServices();
     await screen.findByRole("table", { name: "Services" });
@@ -334,7 +373,7 @@ describe("services page", () => {
     expect(server.kills).toEqual([]);
   });
 
-  it("SVC-9: a process still alive 5 seconds after Stop offers Force stop, which sends SIGKILL", async () => {
+  it("SVC-9: a process still alive 5 seconds after Stop offers Force stop, which sends SIGKILL, even once its port is closed", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: false });
     const m = servicesMachine();
     m.processes.find((p) => p.pid === 33438)!.ignoresTerm = true;
@@ -345,6 +384,8 @@ describe("services page", () => {
     fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Stop" }));
     await advance(0);
     expect(server.kills).toEqual([{ target: -33438, signal: "SIGTERM" }]);
+    // Shutting down, it closed its port but still runs.
+    server.machine.processes.find((p) => p.pid === 33438)!.ports = [];
     expect(within(row(33438)).getByRole("button", { name: "Stopping…" })).toBeDisabled();
     expect(within(row(33438)).queryByRole("button", { name: "Force stop" })).toBeNull();
     await advance(FORCE_STOP_AFTER_MS);
