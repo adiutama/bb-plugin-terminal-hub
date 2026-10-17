@@ -1,6 +1,7 @@
 // The left rail: "Find environment", then bb's projects with their
 // environments that have terminals (LIST-33 to LIST-35, LIST-41 to LIST-45).
 import { type KeyboardEvent, type RefObject, useEffect, useLayoutEffect, useRef } from "react";
+import { useProjectMenus } from "@/components/folder-states";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -9,8 +10,8 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Icon } from "@/components/ui/icon";
+import type { MenuEnvironments } from "@/lib/folders";
 import type { HubSnapshot, ProjectRecord } from "@/lib/hub";
-import type { EnvironmentInfo } from "@/lib/hub-store";
 import { applyScrollAnchor, type PageMemory, readScrollAnchor } from "@/lib/page-memory";
 import { filterRail, findWords, type Place, type RailGroup } from "@/lib/rail";
 import { cn } from "@/lib/utils";
@@ -73,20 +74,34 @@ function useRememberedScroll(
   }, [scroller, memory]);
 }
 
-/** LIST-41: a project's "New terminal in…" menu, every environment included. */
+/** "Checking folders…" while a menu's folder checks run (LIST-48). */
+export function CheckingFolders() {
+  return (
+    <p role="status" className="px-2 py-1.5 text-[12px] text-muted-foreground">
+      Checking folders…
+    </p>
+  );
+}
+
+/**
+ * LIST-41, LIST-48: a project's "New terminal in…" menu: its environments
+ * whose folder may hold a shell, checked when the menu opens.
+ */
 function NewTerminalIn({
   project,
-  environments,
+  menu,
+  onOpen,
   creating,
   onCreate,
 }: {
   project: ProjectRecord;
-  environments: readonly EnvironmentInfo[];
+  menu: MenuEnvironments;
+  onOpen: () => void;
   creating: boolean;
   onCreate: (environmentId: string) => void;
 }) {
   return (
-    <DropdownMenu>
+    <DropdownMenu onOpenChange={(open) => open && onOpen()}>
       <DropdownMenuTrigger asChild>
         <button
           type="button"
@@ -100,7 +115,7 @@ function NewTerminalIn({
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="max-w-80">
         <DropdownMenuLabel>New terminal in…</DropdownMenuLabel>
-        {environments.map((env) => (
+        {menu.shown.map((env) => (
           <DropdownMenuItem key={env.id} onSelect={() => onCreate(env.id)}>
             <Icon
               name="GitBranch"
@@ -112,6 +127,7 @@ function NewTerminalIn({
             </span>
           </DropdownMenuItem>
         ))}
+        {menu.checking ? <CheckingFolders /> : null}
       </DropdownMenuContent>
     </DropdownMenu>
   );
@@ -147,6 +163,7 @@ export function EnvironmentRail({
   onCreate,
   memory,
 }: RailProps) {
+  const menus = useProjectMenus(snapshot);
   const words = findWords(find);
   const finding = words.length > 0;
   const shown = filterRail(
@@ -287,7 +304,8 @@ export function EnvironmentRail({
                 </button>
                 <NewTerminalIn
                   project={group.project}
-                  environments={snapshot.views.get(group.project.id)?.environments ?? []}
+                  menu={menus.forProject(group.project.id)}
+                  onOpen={() => menus.check(menus.forProject(group.project.id).unchecked)}
                   creating={creating}
                   onCreate={(environmentId) =>
                     onCreate({ projectId: group.project.id, environmentId })

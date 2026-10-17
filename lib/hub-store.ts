@@ -144,7 +144,9 @@ export interface HubSdk extends InventorySdk, ActionsSdk {
   };
   environments: { list(args: { projectId: string }): Promise<EnvironmentRecord[]> };
   projects: { list(): Promise<{ id: string; name: string }[]> };
-  hosts: { directory(args: { hostId: string }): Promise<{ directory: string }> };
+  hosts: {
+    directory(args: { hostId: string; path?: string }): Promise<{ directory: string }>;
+  };
   subscribe(args: Subscription): () => void;
 }
 
