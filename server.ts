@@ -1,14 +1,39 @@
 // Terminal Hub backend entry.
 //
-// Small on purpose: the page talks to bb's terminals API directly through
-// `useSdk()`. The server only serves the Ghostty WebAssembly engine to the
-// page and hosts the `bb terminal-hub` CLI command for agents.
+// The Terminals page talks to bb's terminals API directly through `useSdk()`.
+// The server serves the Ghostty WebAssembly engine to the page, scans and
+// signals processes for the Services page over plugin RPC (ADR 202610171646),
+// and hosts the `bb terminal-hub` CLI command for agents.
 import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { type BbPluginApi, cliCommand, defineCli, PluginCliError } from "@get-bb/plugin-sdk";
 import { formatText, listEnvironment, resolveEnvironment, toJson } from "./lib/cli";
+import { nodeProcessHost } from "./lib/process-host";
+import type { ProcessHost } from "./lib/processes";
+import { Services } from "./lib/services";
+import { servicesContract } from "./lib/services-contract";
 
-export default async function plugin(bb: BbPluginApi) {
+const environmentOption = {
+  type: "string",
+  description: "Environment id (env_…). Defaults to the calling thread's environment.",
+  aliases: ["env", "environment-id"],
+  placeholder: "id",
+} as const;
+
+export default function plugin(bb: BbPluginApi) {
+  return createPlugin(bb, nodeProcessHost());
+}
+
+/** The plugin over `host`: the real machine, or recorded output in tests. */
+export async function createPlugin(bb: BbPluginApi, host: ProcessHost) {
+  const services = new Services(bb.sdk, host);
+  bb.rpc.register(servicesContract, {
+    "services.list": () => services.list(),
+    "services.plan": ({ pid, startedAt }) => services.plan(pid, startedAt),
+    "services.stop": ({ pid, startedAt, force }) => services.stop(pid, startedAt, force),
+    "services.log": ({ pid, startedAt }) => services.log(pid, startedAt),
+  });
+
   // Resolve the WASM from the pinned engine package in both source and dist
   // installs, so there is no second checked-in binary to drift out of sync.
   const wasmPath = createRequire(import.meta.url).resolve("@wterm/ghostty/ghostty-vt.wasm");
@@ -35,12 +60,7 @@ export default async function plugin(bb: BbPluginApi) {
           description:
             "Shows the environment's own terminals, then every thread terminal in it (archived threads included) with its thread and state. Run it before starting a dev server or watcher, and reuse a matching terminal instead of starting another.",
           options: {
-            environment: {
-              type: "string",
-              description: "Environment id (env_…). Defaults to the calling thread's environment.",
-              aliases: ["env", "environment-id"],
-              placeholder: "id",
-            },
+            environment: environmentOption,
             json: { type: "boolean", description: "Print machine-readable JSON" },
           },
           async run(input, ctx) {
