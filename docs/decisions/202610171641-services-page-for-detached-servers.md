@@ -1,6 +1,6 @@
 # A Services page lists servers running in environment folders outside bb terminals
 
-- Status: proposed
+- Status: accepted
 - Date: 2026-10-17
 - Supersedes: none
 - Superseded by: none
