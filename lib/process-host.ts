@@ -4,7 +4,7 @@
 import { execFile } from "node:child_process";
 import { constants } from "node:fs";
 import { access, open, readFile } from "node:fs/promises";
-import { delimiter, join } from "node:path";
+import { basename, delimiter, join } from "node:path";
 import { CommandMissing, type ProcessHost } from "./processes";
 
 /** bb started from the Dock may lack the system folders on its PATH. */
@@ -36,10 +36,28 @@ function resolveCommand(command: string): Promise<string | null> {
   return found;
 }
 
+/** Runtimes that run any script: their path does not single out bb. */
+const GENERIC_RUNTIMES = new Set(["node", "nodejs", "bun", "deno"]);
+
+/**
+ * SVC-22: bb's executable is the one running this server: bb ships its server
+ * on its own binary (`/Applications/bb.app/Contents/MacOS/bb` on macOS, as
+ * `ps` shows for bb's server, host daemon, and provider bridges). When the
+ * server runs on a plain JavaScript runtime (a development setup), there is no
+ * executable to match by, and only the ancestry rule applies.
+ */
+export function bbExecutableOf(execPath: string): string | null {
+  const name = basename(execPath)
+    .toLowerCase()
+    .replace(/\.exe$/, "");
+  return GENERIC_RUNTIMES.has(name) || /^node\d*$/.test(name) ? null : execPath;
+}
+
 export function nodeProcessHost(): ProcessHost {
   return {
     platform: process.platform,
     selfPid: process.pid,
+    bbExecutable: bbExecutableOf(process.execPath),
     async exec(command, args) {
       const path = await resolveCommand(command);
       if (path === null) throw new CommandMissing(command);

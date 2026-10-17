@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it } from "vitest";
+import { bbExecutableOf } from "../lib/process-host";
 import { parseFiles, parseListeners, parseProcesses } from "../lib/processes";
 import { LOG_TAIL_BYTES } from "../lib/services";
-import { STARTED_AT } from "./fixtures/fake-host";
+import { BB, STARTED_AT } from "./fixtures/fake-host";
 import {
   disposeServers,
   servicesMachine,
@@ -82,6 +83,130 @@ describe("services: what is listed", () => {
   it("SVC-3: a process with BB_TERMINAL_SESSION_ID is not listed", async () => {
     const { list } = await listed();
     expect(pids(list)).not.toContain(51000);
+  });
+
+  it("SVC-3: a process with a controlling terminal is not listed, even when its environment cannot be read", async () => {
+    const m = servicesMachine();
+    m.processes.push(
+      // python3 in a bb terminal: Apple-signed, so ps shows no environment.
+      {
+        pid: 3000,
+        pgid: 3000,
+        tty: "ttys005",
+        command: "/usr/bin/python3 -m http.server 8000",
+        cwd: "/Users/me/repo",
+        env: null,
+        ports: [8000],
+      },
+      // Started from Terminal.app by an agent's variables.
+      {
+        pid: 3001,
+        tty: "ttys006",
+        command: "node g.js",
+        cwd: "/tmp",
+        env: agentEnv(),
+        ports: [3080],
+      },
+    );
+    const server = await startServer(servicesWorld(), m);
+    const list = await server.call("services.list");
+    expect(pids(list)).not.toContain(3000);
+    expect(pids(list)).not.toContain(3001);
+    expect(await server.stop(3000, STARTED_AT, false)).toEqual({ outcome: "changed" });
+    expect(server.kills).toEqual([]);
+  });
+
+  it("SVC-22: bb's own processes are never listed nor signalled: the server, its ancestors, their groups, and bb's executable", async () => {
+    const m = servicesMachine();
+    m.selfPid = 1500;
+    m.processes.push(
+      // bb's app, its bridge, and the server running this plugin.
+      { pid: 1480, pgid: 1480, command: BB, cwd: "/", env: {} },
+      { pid: 1490, ppid: 1480, pgid: 1480, command: `${BB} bb-app-bridge.mjs`, env: {} },
+      {
+        pid: 1500,
+        ppid: 1490,
+        pgid: 1480,
+        command: `${BB} server/dist/index.js`,
+        cwd: "/Users/me",
+        env: {},
+        ports: [38886],
+      },
+      // The host daemon, in the same group.
+      {
+        pid: 1600,
+        ppid: 1490,
+        pgid: 1480,
+        command: `${BB} host-daemon/daemon-bundle.mjs`,
+        cwd: "/Users/me",
+        env: {},
+        ports: [38887],
+      },
+      // Not bb's executable, but in the ancestors' group.
+      {
+        pid: 1601,
+        ppid: 1480,
+        pgid: 1480,
+        command: "/Applications/bb.app/Contents/Frameworks/bb Helper.app/Contents/MacOS/bb Helper",
+        cwd: "/Users/me",
+        env: {},
+        ports: [38890],
+      },
+      // The provider bridge leading an agent's group in the environment's folder.
+      {
+        pid: 2000,
+        ppid: 1600,
+        pgid: 2000,
+        command: `${BB} provider-bridge.mjs`,
+        cwd: "/Users/me/repo",
+        env: agentEnv(),
+        ports: [38900],
+      },
+    );
+    // An environment at the home folder holds them all.
+    const w = servicesWorld();
+    w.environments.push({
+      id: "env_home",
+      projectId: "proj_2",
+      name: "home",
+      branchName: null,
+      path: "/Users/me",
+      hostId: "host_1",
+      status: "ready",
+    });
+    const server = await startServer(w, m);
+    const list = await server.call("services.list");
+    for (const pid of [1480, 1490, 1500, 1600, 1601, 2000]) {
+      expect(pids(list)).not.toContain(pid);
+      expect(await server.stop(pid, STARTED_AT, true)).toEqual({ outcome: "changed" });
+    }
+    // What runs at home that is not bb's is still listed.
+    expect(pids(list)).toEqual(expect.arrayContaining([33438, 48345, 51002]));
+    expect(server.kills).toEqual([]);
+  });
+
+  it("SVC-22: bb's executable is the server's own binary, unless that is a plain JavaScript runtime", () => {
+    expect(bbExecutableOf("/Applications/bb.app/Contents/MacOS/bb")).toBe(
+      "/Applications/bb.app/Contents/MacOS/bb",
+    );
+    expect(bbExecutableOf("/opt/bb/bb")).toBe("/opt/bb/bb");
+    for (const runtime of ["/usr/local/bin/node", "/opt/homebrew/bin/node22", "/usr/bin/bun"]) {
+      expect(bbExecutableOf(runtime)).toBeNull();
+    }
+  });
+
+  it("SVC-22: bb's executable is only a rule when it is bb's own, not a plain Node", async () => {
+    const m = servicesMachine();
+    m.bbExecutable = null;
+    m.processes.push({
+      pid: 2100,
+      command: "/usr/local/bin/node server.js",
+      cwd: "/Users/me/repo",
+      env: {},
+      ports: [3090],
+    });
+    const server = await startServer(servicesWorld(), m);
+    expect(pids(await server.call("services.list"))).toContain(2100);
   });
 
   it("SVC-20: a process listening only on Unix sockets is not listed; only TCP listeners are asked for", async () => {
@@ -319,24 +444,74 @@ describe("services: stopping", () => {
     expect(server.kills).toEqual([{ target: 991, signal: "SIGTERM" }]);
   });
 
-  it("SVC-19: never this server's own process group", async () => {
+  it("SVC-19: only the listener when a group member's environment cannot be read, or it has a terminal", async () => {
     const m = servicesMachine();
-    m.selfPid = 1500;
     m.processes.push(
-      { pid: 1500, pgid: 1400, command: "bb server", env: {} },
+      // Apple-signed programs hide their environment from ps.
+      { pid: 1100, pgid: 1100, command: "/bin/zsh -c make dev", cwd: "/Users/me/repo", env: null },
       {
-        pid: 1401,
-        pgid: 1400,
-        command: "node x.js",
+        pid: 1101,
+        pgid: 1100,
+        command: "node d.js",
         cwd: "/Users/me/repo",
         env: {},
-        ports: [3040],
+        ports: [3050],
+      },
+      // A member with a terminal (a job started from a shell).
+      {
+        pid: 1201,
+        pgid: 1200,
+        command: "node e.js",
+        cwd: "/Users/me/repo",
+        env: {},
+        ports: [3060],
+      },
+      { pid: 1202, pgid: 1200, command: "tail -f x.log", tty: "ttys007", env: {} },
+    );
+    const server = await startServer(servicesWorld(), m);
+    await server.call("services.list");
+    for (const pid of [1101, 1201]) {
+      expect(await server.call("services.plan", { pid, startedAt: STARTED_AT })).toMatchObject({
+        scope: "process",
+        target: pid,
+      });
+    }
+    // The launch's own group, every member read: still the whole group.
+    expect(
+      await server.call("services.plan", { pid: 48345, startedAt: API_STARTED }),
+    ).toMatchObject({ scope: "group", target: 48263 });
+  });
+
+  it("SVC-19: only the listener when a group member is protected", async () => {
+    const m = servicesMachine();
+    m.processes.push(
+      // The provider bridge, running bb's executable, leads its agent's group.
+      { pid: 2000, ppid: 1600, pgid: 2000, command: `${BB} provider-bridge.mjs`, env: agentEnv() },
+      {
+        pid: 2001,
+        ppid: 2000,
+        pgid: 2000,
+        command: "claude",
+        cwd: "/Users/me/repo",
+        env: agentEnv(),
+      },
+      {
+        pid: 2002,
+        ppid: 2001,
+        pgid: 2000,
+        command: "node f.js",
+        cwd: "/Users/me/repo",
+        env: agentEnv(),
+        ports: [3070],
       },
     );
     const server = await startServer(servicesWorld(), m);
     await server.call("services.list");
-    expect(await server.call("services.plan", { pid: 1401, startedAt: STARTED_AT })).toMatchObject({
+    expect(await server.call("services.plan", { pid: 2002, startedAt: STARTED_AT })).toEqual({
+      outcome: "ready",
       scope: "process",
+      target: 2002,
+      commands: ["node f.js"],
     });
   });
 
@@ -469,21 +644,27 @@ describe("services: reading lsof and ps", () => {
     ).toEqual(new Map([[947, new Set([61183, 50480])]]));
     expect(
       parseProcesses(
-        "33438 33438 Sat Oct 17 20:16:31 2026     /opt/postgres -D /pg\n 7809  7767 Thu Oct  1 22:23:04 2026     node x\n",
+        "33438     1 33438 ??       Sat Oct 17 20:16:31 2026     /opt/postgres -D /pg\n 7809  7767  7767 ttys001  Thu Oct  1 22:23:04 2026     node x\n 900   899   899 pts/2    Thu Oct  1 22:23:04 2026     vim\n 901     1   901 ?        Thu Oct  1 22:23:04 2026     sshd\n",
       ),
     ).toEqual([
       {
         pid: 33438,
+        ppid: 1,
         pgid: 33438,
+        tty: null,
         startedAt: Date.parse("Sat Oct 17 20:16:31 2026"),
         command: "/opt/postgres -D /pg",
       },
       {
         pid: 7809,
+        ppid: 7767,
         pgid: 7767,
+        tty: "ttys001",
         startedAt: Date.parse("Thu Oct 1 22:23:04 2026"),
         command: "node x",
       },
+      expect.objectContaining({ pid: 900, tty: "pts/2" }),
+      expect.objectContaining({ pid: 901, tty: null }),
     ]);
     expect(
       parseFiles(
