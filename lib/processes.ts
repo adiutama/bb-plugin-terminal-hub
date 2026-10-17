@@ -15,8 +15,14 @@ export class CommandMissing extends Error {
 /** The machine running bb, as far as the Services page needs it. */
 export interface ProcessHost {
   platform: string;
-  /** This server's own PID; its process group is never signalled. */
+  /** This server's own PID: it, its ancestors, and their groups are bb's (SVC-22). */
   selfPid: number;
+  /**
+   * bb's executable (the server's `process.execPath`): processes running it
+   * are bb's (SVC-22). Null when the server runs on a plain JavaScript
+   * runtime, which would match every Node server.
+   */
+  bbExecutable: string | null;
   /**
    * Runs `command` with `args` (no shell) and resolves its standard output,
    * also when it exits non-zero (`lsof` does when it finds nothing). Rejects
@@ -34,7 +40,10 @@ export interface ProcessHost {
 /** A process as `ps` lists it. */
 export interface ProcessInfo {
   pid: number;
+  ppid: number;
   pgid: number;
+  /** SVC-3: the controlling terminal (`ttys004`, `pts/2`); null without one. */
+  tty: string | null;
   /** Start time in ms, to the second. */
   startedAt: number;
   command: string;
@@ -85,24 +94,62 @@ export function parseListeners(output: string): Map<number, Set<number>> {
   return ports;
 }
 
-const PS_LINE = /^\s*(\d+)\s+(\d+)\s+(\w{3}\s+\w{3}\s+\d+\s+\d{1,2}:\d{2}:\d{2}\s+\d{4})\s+(.*)$/;
+const PS_LINE =
+  /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(\w{3}\s+\w{3}\s+\d+\s+\d{1,2}:\d{2}:\d{2}\s+\d{4})\s+(.*)$/;
 
-/** `ps -o pid=,pgid=,lstart=,command=` output, run with `LC_ALL=C`. */
+/** What `ps -o tty` prints for a process without a controlling terminal. */
+const NO_TTY = new Set(["?", "??", "-"]);
+
+/** `ps -o pid=,ppid=,pgid=,tty=,lstart=,command=` output, run with `LC_ALL=C`. */
 export function parseProcesses(output: string): ProcessInfo[] {
   const processes: ProcessInfo[] = [];
   for (const line of output.split("\n")) {
     const match = PS_LINE.exec(line);
     if (!match) continue;
-    const startedAt = Date.parse((match[3] ?? "").replace(/\s+/g, " "));
+    const startedAt = Date.parse((match[5] ?? "").replace(/\s+/g, " "));
     if (Number.isNaN(startedAt)) continue;
+    const tty = match[4] ?? "";
     processes.push({
       pid: Number(match[1]),
-      pgid: Number(match[2]),
+      ppid: Number(match[2]),
+      pgid: Number(match[3]),
+      tty: NO_TTY.has(tty) ? null : tty,
       startedAt,
-      command: (match[4] ?? "").trimEnd(),
+      command: (match[6] ?? "").trimEnd(),
     });
   }
   return processes;
+}
+
+/**
+ * SVC-22: bb's own processes: the server running this plugin, its ancestors
+ * up to (not including) PID 1, every process in their process groups, and
+ * every process running bb's executable. Never listed, never signalled.
+ */
+export function protectedPids(
+  all: readonly ProcessInfo[],
+  selfPid: number,
+  bbExecutable: string | null,
+): Set<number> {
+  const byPid = new Map(all.map((p) => [p.pid, p]));
+  const pids = new Set<number>();
+  const groups = new Set<number>();
+  let pid = selfPid;
+  while (pid > 1 && !pids.has(pid)) {
+    pids.add(pid);
+    const process = byPid.get(pid);
+    if (!process) break;
+    if (process.pgid > 1) groups.add(process.pgid);
+    pid = process.ppid;
+  }
+  for (const process of all) {
+    if (groups.has(process.pgid)) pids.add(process.pid);
+    const command = process.command;
+    if (bbExecutable && (command === bbExecutable || command.startsWith(`${bbExecutable} `))) {
+      pids.add(process.pid);
+    }
+  }
+  return pids;
 }
 
 /** `lsof -a -p … -d cwd,1 -F ftn` output: each PID's working folder and log file. */
@@ -170,7 +217,7 @@ export function parseEnvironments(
   return found;
 }
 
-const RUN_AS = ["-ww", "-o", "pid=,pgid=,lstart=,command="];
+const RUN_AS = ["-ww", "-o", "pid=,ppid=,pgid=,tty=,lstart=,command="];
 
 /** The processes with these PIDs (all of them when `pids` is null). */
 export async function listProcesses(
@@ -223,7 +270,10 @@ export async function readFiles(
   );
 }
 
-/** SVC-2, SVC-12, SVC-20: every process listening on a TCP port, with what it carries. */
+/**
+ * SVC-2, SVC-12, SVC-20, SVC-22: every process listening on a TCP port, with
+ * what it carries, except bb's own.
+ */
 export async function scanListeners(host: ProcessHost): Promise<ListenerScan> {
   if (host.platform !== "darwin" && host.platform !== "linux") return { available: false };
   let output: string;
@@ -234,7 +284,11 @@ export async function scanListeners(host: ProcessHost): Promise<ListenerScan> {
     throw error;
   }
   const ports = parseListeners(output);
-  const processes = await listProcesses(host, [...ports.keys()]);
+  if (ports.size === 0) return { available: true, listeners: [] };
+  // Every process: SVC-22 needs the server's ancestors and their groups.
+  const all = await listProcesses(host, null);
+  const bbs = protectedPids(all, host.selfPid, host.bbExecutable);
+  const processes = all.filter((p) => ports.has(p.pid) && !bbs.has(p.pid));
   const pids = processes.map((process) => process.pid);
   const [files, variables] = await Promise.all([
     readFiles(host, pids),

@@ -6,7 +6,11 @@ import { CommandMissing, type ProcessHost } from "../../lib/processes";
 
 export interface FakeProcess {
   pid: number;
+  /** 1 (launchd) unless set. */
+  ppid?: number;
   pgid?: number;
+  /** Controlling terminal (`ttys004`); none unless set. */
+  tty?: string;
   /** `ps -o lstart` as LC_ALL=C prints it. */
   start?: string;
   command: string;
@@ -26,6 +30,8 @@ export interface Machine {
   /** False: `lsof` is not installed. */
   lsof?: boolean;
   selfPid?: number;
+  /** bb's executable, as `process.execPath` gives it in the server. */
+  bbExecutable?: string | null;
   processes: FakeProcess[];
   /** File contents by path, for log tails. */
   files: Record<string, string>;
@@ -34,8 +40,10 @@ export interface Machine {
 export const START = "Sat Oct 17 20:16:31 2026";
 export const STARTED_AT = Date.parse(START);
 
+export const BB = "/Applications/bb.app/Contents/MacOS/bb";
+
 export function machine(processes: FakeProcess[], files: Record<string, string> = {}): Machine {
-  return { processes, files, selfPid: 99_999 };
+  return { processes, files, selfPid: 99_999, bbExecutable: BB };
 }
 
 /** The `-p` argument's PIDs; null when every process is asked for. */
@@ -57,6 +65,7 @@ export function fakeHost(m: Machine) {
   const host: ProcessHost = {
     platform: m.platform ?? "darwin",
     selfPid: m.selfPid ?? 99_999,
+    bbExecutable: m.bbExecutable === undefined ? BB : m.bbExecutable,
     async exec(command, args) {
       calls.push({ command, args: [...args] });
       if (command === "lsof") {
@@ -89,10 +98,18 @@ export function fakeHost(m: Machine) {
           })
           .join("\n");
       }
+      // pid=,ppid=,pgid=,tty=,lstart=,command=
+      const none = m.platform === "linux" ? "?" : "??";
       return asked(args)
-        .map(
-          (p) =>
-            `${String(p.pid).padStart(5)} ${String(p.pgid ?? p.pid).padStart(5)} ${p.start ?? START}     ${p.command}`,
+        .map((p) =>
+          [
+            String(p.pid).padStart(5),
+            String(p.ppid ?? 1).padStart(5),
+            String(p.pgid ?? p.pid).padStart(5),
+            (p.tty ?? none).padEnd(8),
+            `${p.start ?? START}    `,
+            p.command,
+          ].join(" "),
         )
         .join("\n");
     },

@@ -67,15 +67,15 @@ export function servicesMachine(): Machine {
         pgid: 48263,
         command: "npm run dev",
         cwd: WORKTREE,
-        // npm rewrites its title over its environment.
-        env: null,
+        env: agentEnv("env_wt", "thr_map"),
       },
       {
         pid: 48304,
+        ppid: 48265,
         pgid: 48263,
         command: "npm exec tsx watch apps/api/src/main.ts",
         cwd: WORKTREE,
-        env: null,
+        env: agentEnv("env_wt", "thr_map"),
       },
       {
         pid: 48345,
@@ -100,6 +100,7 @@ export function servicesMachine(): Machine {
       {
         pid: 51000,
         pgid: 50990,
+        tty: "ttys004",
         command: "node node_modules/.bin/vite --port 5174",
         cwd: "/Users/me/hub",
         stdout: { type: "CHR", path: "/dev/ttys004" },

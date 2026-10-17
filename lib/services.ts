@@ -10,6 +10,7 @@ import {
   listProcesses,
   type ProcessHost,
   type ProcessInfo,
+  protectedPids,
   readFiles,
   readVariables,
   scanListeners,
@@ -255,7 +256,8 @@ export class Services {
   /** SVC-2, SVC-3, SVC-18: the listener as a listed process, or null when it is not one. */
   private async serviceFor(index: EnvironmentIndex, listener: Listener): Promise<Service | null> {
     if (listener.ports.length === 0) return null;
-    if (listener.variables?.terminalSessionId) return null;
+    // SVC-3: in a terminal, a bb one or any other.
+    if (listener.tty !== null || listener.variables?.terminalSessionId) return null;
     const environmentId = environmentOf(index, listener.cwd, listener.variables);
     if (environmentId === null) return null;
     const threadId = listener.variables?.threadId ?? null;
@@ -272,10 +274,12 @@ export class Services {
   }
 
   /**
-   * SVC-8, SVC-13, SVC-19: what a signal to `pid` reaches. Only a PID the
-   * latest scan listed, still with the start time it listed. Its whole group
-   * when the group's leader is gone, listed, or in the same environment, and
-   * no process in the group runs in a bb terminal; else the listener alone.
+   * SVC-8, SVC-13, SVC-19, SVC-22: what a signal to `pid` reaches. Only a PID
+   * the latest scan listed, still with the start time it listed, and never
+   * one of bb's. Its whole group when the group's leader is gone, listed, or
+   * in the same environment, and every member is known: its environment was
+   * read, it has no terminal and no `BB_TERMINAL_SESSION_ID`, and it is not
+   * bb's. Else the listener alone.
    */
   private async target(pid: number, startedAt: number): Promise<Target> {
     const listed = this.latest.get(pid);
@@ -283,15 +287,21 @@ export class Services {
     const all = await listProcesses(this.host, null);
     const process = all.find((p) => p.pid === pid);
     if (!process || process.startedAt !== startedAt) return { kind: "changed" };
+    const bbs = protectedPids(all, this.host.selfPid, this.host.bbExecutable);
+    if (bbs.has(pid)) return { kind: "changed" };
     const service = listed.service;
     const alone: Target = { kind: "process", service, process };
     const pgid = process.pgid;
-    // Never this server's own group, nor init's.
-    const own = all.find((p) => p.pid === this.host.selfPid)?.pgid ?? this.host.selfPid;
-    if (pgid <= 1 || pgid === own) return alone;
+    // Never init's group.
+    if (pgid <= 1) return alone;
     const members = all.filter((p) => p.pgid === pgid);
+    if (members.some((member) => member.tty !== null || bbs.has(member.pid))) return alone;
     const variables = await readVariables(this.host, members);
-    if (members.some((member) => variables.get(member.pid)?.terminalSessionId)) return alone;
+    const known = members.every((member) => {
+      const vars = variables.get(member.pid);
+      return vars !== null && vars !== undefined && !vars.terminalSessionId;
+    });
+    if (!known) return alone;
     const leader = members.find((member) => member.pid === pgid);
     if (leader && !(await this.leaderBelongs(leader, service, variables))) return alone;
     return { kind: "group", service, pgid, members };
