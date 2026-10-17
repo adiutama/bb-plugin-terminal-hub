@@ -19,6 +19,7 @@ import { TerminalTabs } from "@/components/terminal-tabs";
 import { TerminalView } from "@/components/terminal-view";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
+import { useNow } from "@/hooks/useNow";
 import { endedHere, nextSelection, renameTerminal, restartTerminal } from "@/lib/actions";
 import { isNotFound } from "@/lib/errors";
 import { type HubSnapshot, hubFor } from "@/lib/hub";
@@ -42,15 +43,6 @@ const NEW_TERMINAL_SIZE = { cols: 120, rows: 32 };
 type Missing =
   | { kind: "gone"; terminalId: string; exitCode: number | null }
   | { kind: "unreachable"; terminalId: string; message: string };
-
-function useNow(intervalMs: number): number {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    const timer = setInterval(() => setNow(Date.now()), intervalMs);
-    return () => clearInterval(timer);
-  }, [intervalMs]);
-  return now;
-}
 
 /** VIEW-9: a thread's title, fetched once per thread until bb reloads. */
 const threadTitleCache = new WeakMap<object, Map<string, Promise<string | null>>>();

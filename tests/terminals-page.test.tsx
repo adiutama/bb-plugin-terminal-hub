@@ -183,7 +183,7 @@ function hold<A extends unknown[], R>(method: {
 describe("navigation", () => {
   it("NAV-1: registers a navPanel titled Terminals at path terminals", async () => {
     const app = await loadApp();
-    expect(app.navPanels).toHaveLength(1);
+    // The Terminals page comes first; the Services page is SVC-1.
     expect(app.navPanels[0]).toMatchObject({
       id: "terminals",
       title: "Terminals",
