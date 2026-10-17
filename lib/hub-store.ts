@@ -150,6 +150,7 @@ export interface HubSdk extends InventorySdk, ActionsSdk {
 
 export interface EnvironmentInfo {
   id: string;
+  /** LIST-34: the name as the page shows it, told apart from same-named ones. */
   name: string;
   path: string;
   hostId: string;
@@ -1307,7 +1308,7 @@ export class HubStore {
         error: this.environmentErrors.get(env.id) ?? null,
       };
     };
-    const environments = this.environments === null ? null : this.environments.map(toInfo);
+    const environments = this.environments === null ? null : environmentInfos(this.environments);
     const sections = (environments ?? []).map(section);
     const failed = this.currentError() !== null || this.environmentErrors.size > 0;
     return {
@@ -1330,8 +1331,45 @@ export class HubStore {
   }
 }
 
-function toInfo(env: EnvironmentRecord): EnvironmentInfo {
-  return { id: env.id, name: environmentName(env), path: env.path ?? "", hostId: env.hostId };
+function segments(path: string): string[] {
+  return path.split("/").filter(Boolean);
+}
+
+/**
+ * LIST-34: the last segment of `path` that differs from the segment at the
+ * same distance from the end in every other path; null when none does.
+ */
+export function distinguishingSegment(path: string, others: readonly string[]): string | null {
+  const own = segments(path);
+  const rest = others.map(segments);
+  for (let back = 1; back <= own.length; back++) {
+    const segment = own[own.length - back];
+    if (rest.every((other) => other[other.length - back] !== segment)) return segment ?? null;
+  }
+  return null;
+}
+
+/**
+ * LIST-34: each environment's name as the page shows it. Names shared within
+ * the project are followed by " · " and the part of the path that tells them
+ * apart.
+ */
+export function environmentInfos(environments: readonly EnvironmentRecord[]): EnvironmentInfo[] {
+  const base = environments.map(environmentName);
+  return environments.map((env, index) => {
+    const name = base[index] ?? env.id;
+    const path = env.path ?? "";
+    const others = environments
+      .filter((_, i) => i !== index && base[i] === name)
+      .map((other) => other.path ?? "");
+    const suffix = others.length > 0 ? distinguishingSegment(path, others) : null;
+    return {
+      id: env.id,
+      name: suffix ? `${name} · ${suffix}` : name,
+      path,
+      hostId: env.hostId,
+    };
+  });
 }
 
 // ── one store per project, for the app session ────────────────────────────

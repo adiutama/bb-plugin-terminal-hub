@@ -107,7 +107,7 @@ function NewTerminalIn({
               className="size-3 shrink-0 text-muted-foreground"
               aria-hidden="true"
             />
-            <span className="truncate font-mono text-[12px]" title={env.name}>
+            <span className="truncate font-mono text-[12px]" title={`${env.name}\n${env.path}`}>
               {env.name}
             </span>
           </DropdownMenuItem>
@@ -309,7 +309,7 @@ export function EnvironmentRail({
                     data-rail-item=""
                     data-environment-id={entry.environment.id}
                     aria-current={active ? "true" : undefined}
-                    title={entry.environment.name}
+                    title={`${entry.environment.name}\n${entry.environment.path}`}
                     onClick={() =>
                       onSelect({ projectId: entry.projectId, environmentId: entry.environment.id })
                     }

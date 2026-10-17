@@ -64,7 +64,7 @@ export function NewTerminalMenu({
                   className="size-3 shrink-0 text-muted-foreground"
                   aria-hidden="true"
                 />
-                <span className="truncate font-mono text-[12px]" title={env.name}>
+                <span className="truncate font-mono text-[12px]" title={`${env.name}\n${env.path}`}>
                   {env.name}
                 </span>
               </DropdownMenuItem>
