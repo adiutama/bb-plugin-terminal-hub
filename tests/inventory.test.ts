@@ -5,6 +5,7 @@ import {
   loadEnvironment,
   mapLimited,
   orderedRows,
+  tabOrder,
   threadState,
   toHubThread,
 } from "../lib/inventory";
@@ -58,7 +59,7 @@ describe("session list inventory", () => {
     expect(peak).toBe(6);
   });
 
-  it("LIST-2: puts environment-scoped terminals under Environment and thread terminals under From threads", () => {
+  it("AGENT-3: groups environment-scoped terminals apart from each thread's, as the CLI prints them", () => {
     const grouped = groupEnvironment({
       environmentTerminals: [terminal({ id: "term_env" })],
       threads: [thread({ id: "thr_1" })],
@@ -71,7 +72,7 @@ describe("session list inventory", () => {
     ]);
   });
 
-  it("LIST-3: gives each thread row the thread's title and state: active, idle, error, or archived", () => {
+  it("VIEW-9, ACT-5: a thread's title and state: active, idle, error, or archived", () => {
     expect(threadState(thread({ id: "a", status: "active" }))).toBe("active");
     expect(threadState(thread({ id: "b", status: "starting" }))).toBe("active");
     expect(threadState(thread({ id: "c", status: "stopping" }))).toBe("active");
@@ -88,7 +89,7 @@ describe("session list inventory", () => {
     );
   });
 
-  it("LIST-4: marks running terminals of inactive threads stale, since archivedAt or latestAttentionAt", () => {
+  it("AGENT-3, VIEW-9: running terminals of inactive threads are stale for the CLI, and a thread is inactive since archivedAt or latestAttentionAt", () => {
     const grouped = groupEnvironment({
       environmentTerminals: [],
       threads: [
@@ -118,7 +119,7 @@ describe("session list inventory", () => {
     expect(rows.get("a")?.thread?.inactiveSince).toBeNull();
   });
 
-  it("LIST-12: orders Environment by creation and threads by most recent activity, each thread's terminals by creation", () => {
+  it("AGENT-3: the CLI orders environment terminals by creation and threads by most recent activity, each thread's terminals by creation", () => {
     const grouped = groupEnvironment({
       environmentTerminals: [
         terminal({ id: "env_new", createdAt: 30 }),
@@ -142,5 +143,35 @@ describe("session list inventory", () => {
     expect(grouped.environment.map((row) => row.terminal.id)).toEqual(["env_old", "env_new"]);
     expect(grouped.threads.map((group) => group.thread.id)).toEqual(["thr_busy", "thr_quiet"]);
     expect(grouped.threads[0]?.rows.map((row) => row.terminal.id)).toEqual(["b1", "b2"]);
+  });
+
+  it("LIST-12: tabs are environment terminals, then thread terminals, each group oldest first", () => {
+    const grouped = groupEnvironment({
+      environmentTerminals: [
+        terminal({ id: "env_new", createdAt: 30 }),
+        terminal({ id: "env_old", createdAt: 10 }),
+      ],
+      threads: [
+        thread({ id: "thr_quiet", latestAttentionAt: 100 }),
+        thread({ id: "thr_busy", latestAttentionAt: 500 }),
+      ],
+      threadTerminals: new Map([
+        ["thr_quiet", [terminal({ id: "q1", threadId: "thr_quiet", createdAt: 5 })]],
+        [
+          "thr_busy",
+          [
+            terminal({ id: "b2", threadId: "thr_busy", createdAt: 20 }),
+            terminal({ id: "b1", threadId: "thr_busy", createdAt: 15 }),
+          ],
+        ],
+      ]),
+    });
+    expect(tabOrder(grouped).map((row) => row.terminal.id)).toEqual([
+      "env_old",
+      "env_new",
+      "q1",
+      "b1",
+      "b2",
+    ]);
   });
 });

@@ -1,9 +1,9 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from "vitest";
-import { isFilterShortcut } from "../lib/keyboard";
+import { isFindShortcut } from "../lib/keyboard";
 
-function slash(target: Element, extra: Partial<Parameters<typeof isFilterShortcut>[0]> = {}) {
-  return isFilterShortcut({
+function slash(target: Element, extra: Partial<Parameters<typeof isFindShortcut>[0]> = {}) {
+  return isFindShortcut({
     key: "/",
     ctrlKey: false,
     metaKey: false,
@@ -22,12 +22,12 @@ function html(markup: string, selector: string): Element {
   return element;
 }
 
-describe("filter shortcut", () => {
-  it("LIST-22: `/` on a row or other button focuses the filter", () => {
+describe("find shortcut", () => {
+  it("LIST-44: `/` on an environment or other button focuses the find field", () => {
     expect(slash(html("<ul><li><button>dev</button></li></ul>", "button"))).toBe(true);
   });
 
-  it("LIST-22: `/` in a text field, the terminal view, a menu, or a dialog is left alone", () => {
+  it("LIST-44: `/` in a text field, the terminal view, a menu, or a dialog is left alone", () => {
     expect(slash(html("<input>", "input"))).toBe(false);
     expect(slash(html("<textarea></textarea>", "textarea"))).toBe(false);
     expect(slash(html('<div contenteditable="true"><p>x</p></div>', "p"))).toBe(false);
@@ -43,7 +43,7 @@ describe("filter shortcut", () => {
     ).toBe(false);
   });
 
-  it("LIST-22: modifiers, composition, other keys, and handled events do not count", () => {
+  it("LIST-44: modifiers, composition, other keys, and handled events do not count", () => {
     const button = html("<button>dev</button>", "button");
     expect(slash(button, { metaKey: true })).toBe(false);
     expect(slash(button, { ctrlKey: true })).toBe(false);

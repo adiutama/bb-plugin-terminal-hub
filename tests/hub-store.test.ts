@@ -6,8 +6,8 @@ import {
   hubStoreFor,
   RECONCILE_WAIT_MS,
   SCAN_REFRESH_MS,
+  SLOW_REFRESH_MS,
 } from "../lib/hub-store";
-import { ALL } from "../lib/route";
 import { fakeSdk, terminal, thread, world } from "./fixtures/fake-bb";
 
 let visibility: DocumentVisibilityState = "visible";
@@ -31,7 +31,7 @@ function setVisibility(next: DocumentVisibilityState) {
   document.dispatchEvent(new Event("visibilitychange"));
 }
 
-function open(w: ReturnType<typeof world>, environment: string) {
+function open(w: ReturnType<typeof world>, environment: string | null) {
   const bb = fakeSdk(w);
   const store = new HubStore(bb.sdk, "proj_1");
   const detach = store.attach(environment, null);
@@ -142,7 +142,7 @@ describe("hub store", () => {
     expect(store.getView().hints.get("term_dev")?.label).toBe(":5174");
   });
 
-  it("LIST-6: looks up each host's home directory once", async () => {
+  it("VIEW-9: looks up each host's home directory once", async () => {
     const w = world({ terminals: [terminal({ id: "a" }), terminal({ id: "b" })] });
     const { sdk, store } = open(w, "env_a");
     await vi.advanceTimersByTimeAsync(0);
@@ -152,38 +152,50 @@ describe("hub store", () => {
     expect(sdk.hosts.directory).toHaveBeenCalledWith({ hostId: "host_1" });
   });
 
-  it("LIST-14: in All, lists environment terminals every 5 s, rescans threads every 2 minutes, and lists a signalled thread's terminals at once", async () => {
-    const w = world({
-      environments: [
-        ...world().environments,
-        {
-          id: "env_b",
-          projectId: "proj_1",
-          name: "feature",
-          branchName: null,
-          path: "/Users/me/wt",
-          hostId: "host_1",
-          status: "ready",
-        },
-      ],
-      threads: [thread({ id: "thr_1" }), thread({ id: "thr_2", environmentId: "env_b" })],
+  it("LIST-8: lists the selected environment's own terminals every 5 s, other listed ones every 30 s, rescans every 2 minutes, and lists a signalled thread's terminals at once", async () => {
+    const env = (id: string) => ({
+      id,
+      projectId: "proj_1",
+      name: id,
+      branchName: null,
+      path: `/Users/me/${id}`,
+      hostId: "host_1",
+      status: "ready",
     });
-    const { sdk, store, ids, emitThreadChanged } = open(w, ALL);
+    const w = world({
+      environments: [...world().environments, env("env_b"), env("env_empty")],
+      threads: [thread({ id: "thr_1" }), thread({ id: "thr_2", environmentId: "env_b" })],
+      terminals: [terminal({ id: "b1", environmentId: "env_b" })],
+    });
+    const { sdk, store, ids, emitThreadChanged } = open(w, "env_a");
     await vi.advanceTimersByTimeAsync(0);
-    expect(store.getView().sections.map((s) => s.environment.id)).toEqual(["env_a", "env_b"]);
+    expect(store.getView().sections.map((s) => s.environment.id)).toEqual([
+      "env_a",
+      "env_b",
+      "env_empty",
+    ]);
     expect(listCalls(sdk, "thread")).toHaveLength(2);
-    const envCalls = listCalls(sdk, "environment").length;
+    const ownOf = (id: string) =>
+      listCalls(sdk, "environment").filter(([args]) => args.scope.environmentId === id).length;
+    const start = { a: ownOf("env_a"), b: ownOf("env_b"), empty: ownOf("env_empty") };
 
     await vi.advanceTimersByTimeAsync(FAST_REFRESH_MS);
-    expect(listCalls(sdk, "environment").length).toBe(envCalls + 2);
+    expect(ownOf("env_a")).toBe(start.a + 1);
+    expect(ownOf("env_b")).toBe(start.b);
+    await vi.advanceTimersByTimeAsync(SLOW_REFRESH_MS - FAST_REFRESH_MS);
+    expect(ownOf("env_a")).toBe(start.a + 6);
+    expect(ownOf("env_b")).toBe(start.b + 1);
+    // Not listed in the rail: only the full listing looks at it.
+    expect(ownOf("env_empty")).toBe(start.empty);
     expect(listCalls(sdk, "thread")).toHaveLength(2);
 
-    // A thread terminal started without a signal waits for the next scan.
+    // A thread terminal started without a signal waits for the next full listing.
     w.terminals.push(terminal({ id: "term_quiet", threadId: "thr_2", environmentId: "env_b" }));
     await vi.advanceTimersByTimeAsync(FAST_REFRESH_MS);
     expect(ids()).not.toContain("term_quiet");
     await vi.advanceTimersByTimeAsync(SCAN_REFRESH_MS);
     expect(ids()).toContain("term_quiet");
+    expect(ownOf("env_empty")).toBeGreaterThan(start.empty);
 
     const scans = listCalls(sdk, "thread").length;
     w.terminals.push(terminal({ id: "term_signal", threadId: "thr_1" }));
@@ -195,7 +207,37 @@ describe("hub store", () => {
     expect(sdk.threads.get).not.toHaveBeenCalled();
   });
 
-  it("LIST-13: counts running terminals per environment section", async () => {
+  it("LIST-8: selecting another environment lists it at once and moves the 5-second cadence there", async () => {
+    const w = world({
+      environments: [
+        ...world().environments,
+        {
+          id: "env_b",
+          projectId: "proj_1",
+          name: "b",
+          branchName: null,
+          path: "/b",
+          hostId: "host_1",
+          status: "ready",
+        },
+      ],
+      terminals: [terminal({ id: "a1" }), terminal({ id: "b1", environmentId: "env_b" })],
+    });
+    const { sdk, store } = open(w, "env_a");
+    await vi.advanceTimersByTimeAsync(0);
+    const ownOf = (id: string) =>
+      listCalls(sdk, "environment").filter(([args]) => args.scope.environmentId === id).length;
+    const b = ownOf("env_b");
+    store.select("env_b", "b1");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(ownOf("env_b")).toBe(b + 1);
+    const a = ownOf("env_a");
+    await vi.advanceTimersByTimeAsync(FAST_REFRESH_MS * 2);
+    expect(ownOf("env_b")).toBe(b + 3);
+    expect(ownOf("env_a")).toBe(a);
+  });
+
+  it("LIST-34: counts running terminals per environment, and leaves out destroyed environments", async () => {
     const w = world({
       environments: [
         ...world().environments,
@@ -225,7 +267,7 @@ describe("hub store", () => {
         terminal({ id: "b1", threadId: "thr_b", environmentId: "env_b" }),
       ],
     });
-    const { store } = open(w, ALL);
+    const { store } = open(w, null);
     await vi.advanceTimersByTimeAsync(0);
     const sections = store.getView().sections;
     expect(sections.map((s) => [s.environment.name, s.running])).toEqual([
@@ -237,7 +279,7 @@ describe("hub store", () => {
 
   it("LIST-1: a late answer to an older request never replaces a newer listing", async () => {
     const w = world({ threads: [thread({ id: "thr_1" })] });
-    const { sdk, ids, emitThreadChanged } = open(w, ALL);
+    const { sdk, ids, emitThreadChanged } = open(w, null);
     await vi.advanceTimersByTimeAsync(0);
     // The fallback scan asks for thr_1's terminals; bb answers late, with none.
     const real = sdk.terminals.list.getMockImplementation();
@@ -314,7 +356,7 @@ describe("hub store", () => {
     expect(store.getView().rows[0]?.terminal.exitCode).toBe(4);
   });
 
-  it("LIST-13: an environment that cannot be listed shows its error and still counts as loaded", async () => {
+  it("LIST-17: an environment that cannot be listed shows its error, and the project still completes", async () => {
     const w = world({
       environments: [
         ...world().environments,
@@ -329,7 +371,7 @@ describe("hub store", () => {
         },
       ],
     });
-    const { sdk, store } = open(w, ALL);
+    const { sdk, store } = open(w, null);
     const real = sdk.terminals.list.getMockImplementation();
     sdk.terminals.list.mockImplementation(async (args) => {
       if (args.scope.kind === "environment" && args.scope.environmentId === "env_off") {
@@ -339,7 +381,8 @@ describe("hub store", () => {
     });
     await vi.advanceTimersByTimeAsync(0);
     const off = store.getView().sections.find((section) => section.environment.id === "env_off");
-    expect(off?.loaded).toBe(true);
+    expect(store.getView().complete).toBe(true);
+    expect(store.getView().succeeded).toBe(false);
     expect(off?.error).toBe("host offline");
   });
 
@@ -389,7 +432,7 @@ describe("hub store", () => {
     expect(store.getView().rows[0]?.terminal.exitCode).toBe(7);
   });
 
-  it("LIST-17: shows the first scan's progress, and is complete only once it succeeds", async () => {
+  it("LIST-17: is complete only once the first full listing succeeds", async () => {
     const w = world({ threads: [thread({ id: "thr_1" }), thread({ id: "thr_2" })] });
     const bb = fakeSdk(w);
     const real = bb.sdk.terminals.list.getMockImplementation();
@@ -402,20 +445,16 @@ describe("hub store", () => {
       return real?.(args) as never;
     });
     const store = new HubStore(bb.sdk, "proj_1");
-    detachers.push(store.attach(ALL, null));
-    expect(store.getView().scan).toEqual({ scanned: 0, total: null });
+    detachers.push(store.attach(null, null));
     await vi.advanceTimersByTimeAsync(0);
-    expect(store.getView().scan).toEqual({ scanned: 1, total: 2 });
     expect(store.getView().complete).toBe(false);
 
     release();
     await vi.advanceTimersByTimeAsync(0);
-    expect(store.getView().scan).toBeNull();
     expect(store.getView().complete).toBe(true);
 
     // Later rescans run quietly.
     await vi.advanceTimersByTimeAsync(SCAN_REFRESH_MS);
-    expect(store.getView().scan).toBeNull();
   });
 
   it("LIST-17: a failed first scan shows its error, stays incomplete, and the next scan tries again", async () => {
@@ -423,10 +462,9 @@ describe("hub store", () => {
     const bb = fakeSdk(w);
     bb.sdk.threads.list.mockRejectedValueOnce(new Error("bb is restarting"));
     const store = new HubStore(bb.sdk, "proj_1");
-    detachers.push(store.attach(ALL, null));
+    detachers.push(store.attach(null, null));
     await vi.advanceTimersByTimeAsync(0);
     expect(store.getView().error).toBe("bb is restarting");
-    expect(store.getView().scan).toBeNull();
     expect(store.getView().complete).toBe(false);
     // Rows it already has stay.
     expect(store.getView().rows.map((row) => row.terminal.id)).toEqual(["a1"]);
@@ -440,7 +478,7 @@ describe("hub store", () => {
     const bb = fakeSdk(world());
     bb.sdk.environments.list.mockRejectedValueOnce(new Error("no such project"));
     const store = new HubStore(bb.sdk, "proj_1");
-    detachers.push(store.attach(ALL, null));
+    detachers.push(store.attach(null, null));
     await vi.advanceTimersByTimeAsync(0);
     expect(store.getView().error).toBe("no such project");
     expect(store.getView().complete).toBe(false);
@@ -459,9 +497,8 @@ describe("hub store", () => {
       return real?.(args) as never;
     });
     const store = new HubStore(bb.sdk, "proj_1");
-    detachers.push(store.attach(ALL, null));
+    detachers.push(store.attach(null, null));
     await vi.advanceTimersByTimeAsync(0);
-    expect(store.getView().scan).toBeNull();
     expect(store.getView().complete).toBe(false);
     release();
     await vi.advanceTimersByTimeAsync(0);
@@ -469,7 +506,7 @@ describe("hub store", () => {
     expect(store.getView().rows.map((row) => row.terminal.id)).toEqual(["a1"]);
   });
 
-  it("LIST-17: scans never overlap, so an old scan cannot move the progress", async () => {
+  it("LIST-17: full listings never overlap", async () => {
     const w = world({ threads: [thread({ id: "thr_1" })] });
     const bb = fakeSdk(w);
     const real = bb.sdk.terminals.list.getMockImplementation();
@@ -482,69 +519,17 @@ describe("hub store", () => {
       return real?.(args) as never;
     });
     const store = new HubStore(bb.sdk, "proj_1");
-    detachers.push(store.attach(ALL, null));
+    detachers.push(store.attach(null, null));
     await vi.advanceTimersByTimeAsync(SCAN_REFRESH_MS * 2);
     expect(listCalls(bb.sdk, "thread")).toHaveLength(1);
-    expect(store.getView().scan).toEqual({ scanned: 0, total: 1 });
     release();
     await vi.advanceTimersByTimeAsync(0);
     expect(store.getView().complete).toBe(true);
-  });
-
-  it("LIST-10: a single environment is complete once its listing succeeds", async () => {
-    const bb = fakeSdk(world());
-    const real = bb.sdk.terminals.list.getMockImplementation();
-    bb.sdk.terminals.list.mockRejectedValueOnce(new Error("host offline"));
-    const store = new HubStore(bb.sdk, "proj_1");
-    detachers.push(store.attach("env_a", null));
-    await vi.advanceTimersByTimeAsync(0);
-    expect(store.getView().complete).toBe(false);
-    bb.sdk.terminals.list.mockImplementation(real as never);
-    await vi.advanceTimersByTimeAsync(FAST_REFRESH_MS);
-    expect(store.getView().complete).toBe(true);
-  });
-
-  it("LIST-10: switching from All to an environment while the first scan runs is not complete until its threads are listed", async () => {
-    const w = world({
-      threads: [thread({ id: "thr_1" })],
-      terminals: [terminal({ id: "t1", threadId: "thr_1" })],
-    });
-    const bb = fakeSdk(w);
-    const real = bb.sdk.terminals.list.getMockImplementation();
-    let release: () => void = () => {};
-    const gate = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    bb.sdk.terminals.list.mockImplementation(async (args) => {
-      if (args.scope.kind === "thread") await gate;
-      return real?.(args) as never;
-    });
-    const store = new HubStore(bb.sdk, "proj_1");
-    detachers.push(store.attach(ALL, null));
-    await vi.advanceTimersByTimeAsync(FAST_REFRESH_MS);
-    store.select("env_a", null);
-    await vi.advanceTimersByTimeAsync(0);
-    expect(store.getView().complete).toBe(false);
-    expect(store.getView().sections[0]?.loaded).toBe(false);
-    release();
-    await vi.advanceTimersByTimeAsync(0);
-    expect(store.getView().complete).toBe(true);
-    expect(store.getView().rows.map((row) => row.terminal.id)).toEqual(["t1"]);
-  });
-
-  it("LIST-10: after a full scan in All, a picked environment is complete at once", async () => {
-    const w = world({ terminals: [terminal({ id: "a1" })] });
-    const { store } = open(w, ALL);
-    await vi.advanceTimersByTimeAsync(0);
-    expect(store.getView().complete).toBe(true);
-    store.select("env_a", null);
-    expect(store.getView().complete).toBe(true);
-    expect(store.getView().sections[0]?.loaded).toBe(true);
   });
 
   it("LIST-17: a rescan that finds a new environment lists its terminals at once", async () => {
     const w = world();
-    const { store } = open(w, ALL);
+    const { store } = open(w, null);
     await vi.advanceTimersByTimeAsync(0);
     expect(store.getView().complete).toBe(true);
     w.environments.push({
@@ -563,49 +548,12 @@ describe("hub store", () => {
     expect(store.getView().rows.map((row) => row.terminal.id)).toEqual(["n1"]);
   });
 
-  it("LIST-10: an environment newer than the last full scan is complete only once its threads are listed", async () => {
-    const w = world();
-    const bb = fakeSdk(w);
-    const store = new HubStore(bb.sdk, "proj_1");
-    detachers.push(store.attach(ALL, null));
-    await vi.advanceTimersByTimeAsync(0);
-    w.environments.push({
-      id: "env_new",
-      projectId: "proj_1",
-      name: "new",
-      branchName: null,
-      path: "/w/new",
-      hostId: "host_1",
-      status: "ready",
-    });
-    w.threads.push(thread({ id: "thr_new", environmentId: "env_new" }));
-    w.terminals.push(terminal({ id: "n1", threadId: "thr_new", environmentId: "env_new" }));
-    // The rescan lists environments, then hangs on the thread list.
-    let release: () => void = () => {};
-    const gate = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    const realThreads = bb.sdk.threads.list.getMockImplementation();
-    bb.sdk.threads.list.mockImplementation(async (args) => {
-      await gate;
-      return realThreads?.(args) as never;
-    });
-    await vi.advanceTimersByTimeAsync(SCAN_REFRESH_MS + 1);
-    store.select("env_new", null);
-    await vi.advanceTimersByTimeAsync(0);
-    expect(store.getView().complete).toBe(false);
-    release();
-    await vi.advanceTimersByTimeAsync(0);
-    expect(store.getView().complete).toBe(true);
-    expect(store.getView().rows.map((row) => row.terminal.id)).toEqual(["n1"]);
-  });
-
-  it("LIST-27, LIST-17: on return, shows the rows it had at once as last known, without scan progress, until confirmed", async () => {
+  it("LIST-27, LIST-17: on return, shows the rows it had at once as last known until confirmed", async () => {
     const w = world({
       threads: [thread({ id: "thr_1" })],
       terminals: [terminal({ id: "a1" }), terminal({ id: "t1", threadId: "thr_1" })],
     });
-    const { sdk, store, ids, detach } = open(w, ALL);
+    const { sdk, store, ids, detach } = open(w, null);
     await vi.advanceTimersByTimeAsync(0);
     expect(store.getView().complete).toBe(true);
     expect(store.getView().lastKnown).toBe(false);
@@ -625,41 +573,39 @@ describe("hub store", () => {
       await slow;
       return real?.(args) as never;
     });
-    detachers.push(store.attach(ALL, null));
+    detachers.push(store.attach(null, null));
     expect(ids()).toEqual(["a1", "t1"]);
     await vi.advanceTimersByTimeAsync(0);
     let view = store.getView();
     expect(view.lastKnown).toBe(true);
-    expect(view.freshness).toBe("updating");
+    expect(view.lastKnown).toBe(true);
     expect(view.complete).toBe(false);
-    expect(view.scan).toBeNull();
-    expect(view.sections[0]?.loaded).toBe(false);
 
     release();
     await vi.advanceTimersByTimeAsync(0);
     view = store.getView();
     expect(view.lastKnown).toBe(false);
-    expect(view.freshness).toBe("live");
+    expect(view.lastKnown).toBe(false);
     expect(view.complete).toBe(true);
   });
 
   it("LIST-27: a refresh that fails after a return says it is reconnecting and stays last known", async () => {
     const w = world({ terminals: [terminal({ id: "a1" })] });
-    const { sdk, store, detach } = open(w, ALL);
+    const { sdk, store, detach } = open(w, null);
     await vi.advanceTimersByTimeAsync(0);
     detach();
     await vi.advanceTimersByTimeAsync(0);
     sdk.threads.list.mockRejectedValue(new Error("bb is restarting"));
-    detachers.push(store.attach(ALL, null));
+    detachers.push(store.attach(null, null));
     await vi.advanceTimersByTimeAsync(0);
     expect(store.getView().lastKnown).toBe(true);
-    expect(store.getView().freshness).toBe("reconnecting");
+    expect(store.getView().lastKnown).toBe(true);
     expect(store.getView().complete).toBe(false);
   });
 
   it("LIST-27: a scan from before leaving cannot confirm the list after a return", async () => {
     const w = world({ threads: [thread({ id: "thr_1" })] });
-    const { sdk, store, detach } = open(w, ALL);
+    const { sdk, store, detach } = open(w, null);
     await vi.advanceTimersByTimeAsync(0);
     const real = sdk.threads.list.getMockImplementation();
     const gates: (() => void)[] = [];
@@ -671,7 +617,7 @@ describe("hub store", () => {
     expect(gates).toHaveLength(1);
     detach();
     await vi.advanceTimersByTimeAsync(0);
-    detachers.push(store.attach(ALL, null));
+    detachers.push(store.attach(null, null));
     await vi.advanceTimersByTimeAsync(0);
     // The return starts a scan of its own instead of waiting for the old one.
     expect(gates).toHaveLength(2);
@@ -685,7 +631,7 @@ describe("hub store", () => {
     expect(store.getView().lastKnown).toBe(false);
   });
 
-  it("LIST-27, LIST-10: a single environment's rows are last known until it is listed again", async () => {
+  it("LIST-27: rows are last known after a return until the project is listed again, and no tab closes meanwhile", async () => {
     const w = world({ terminals: [terminal({ id: "a1" })] });
     const { sdk, store, detach } = open(w, "env_a");
     await vi.advanceTimersByTimeAsync(0);
@@ -703,13 +649,13 @@ describe("hub store", () => {
     });
     detachers.push(store.attach("env_a", null));
     await vi.advanceTimersByTimeAsync(0);
-    expect(store.getView().sections[0]?.loaded).toBe(false);
+    expect(store.getView().lastKnown).toBe(true);
     expect(store.getView().complete).toBe(false);
     expect(store.getView().rows.map((row) => row.terminal.id)).toEqual(["a1"]);
     release();
     await vi.advanceTimersByTimeAsync(0);
     expect(store.getView().complete).toBe(true);
-    expect(store.getView().sections[0]?.loaded).toBe(true);
+    expect(store.getView().lastKnown).toBe(false);
   });
 
   it("LIST-28: on return, checks the selected terminal first, then its environment, then scans", async () => {
@@ -717,14 +663,14 @@ describe("hub store", () => {
       threads: [thread({ id: "thr_1" })],
       terminals: [terminal({ id: "a1" }), terminal({ id: "t1", threadId: "thr_1" })],
     });
-    const { sdk, store, detach } = open(w, ALL);
+    const { sdk, store, detach } = open(w, null);
     await vi.advanceTimersByTimeAsync(0);
     detach();
     await vi.advanceTimersByTimeAsync(0);
     sdk.terminals.get.mockClear();
     sdk.terminals.list.mockClear();
     sdk.threads.list.mockClear();
-    detachers.push(store.attach(ALL, "t1"));
+    detachers.push(store.attach("env_a", "t1"));
     await vi.advanceTimersByTimeAsync(0);
     const get = sdk.terminals.get.mock.invocationCallOrder[0] ?? Infinity;
     const own = sdk.terminals.list.mock.calls.findIndex(
@@ -778,7 +724,7 @@ describe("hub store", () => {
     detachers.push(store.attach("env_a", "a1"));
     await vi.advanceTimersByTimeAsync(0);
     expect(store.getView().rows.map((row) => row.terminal.id)).toEqual(["a1"]);
-    expect(store.getView().freshness).toBe("reconnecting");
+    expect(store.getView().lastKnown).toBe(true);
   });
 
   it("VIEW-7: the view's exit marks the row exited at once, with its code", async () => {
@@ -794,15 +740,15 @@ describe("hub store", () => {
     expect(sdk.terminals.get).not.toHaveBeenCalled();
   });
 
-  it("ACT-5: refresh reports whether every part of it succeeded", async () => {
+  it("ACT-5: listing the environment again reports whether every part of it succeeded", async () => {
     const w = world({ terminals: [terminal({ id: "a1" })] });
-    const { sdk, store } = open(w, ALL);
+    const { sdk, store } = open(w, "env_a");
     await vi.advanceTimersByTimeAsync(0);
-    await expect(store.refresh(ALL)).resolves.toBe(true);
+    await expect(store.refreshEnvironment("env_a")).resolves.toBe(true);
     sdk.threads.list.mockRejectedValueOnce(new Error("bb is restarting"));
-    await expect(store.refresh(ALL)).resolves.toBe(false);
+    await expect(store.refreshEnvironment("env_a")).resolves.toBe(false);
     sdk.terminals.list.mockRejectedValueOnce(new Error("host offline"));
-    await expect(store.refresh("env_a")).resolves.toBe(false);
+    await expect(store.refreshEnvironment("env_a")).resolves.toBe(false);
   });
 
   it("LIST-11, VIEW-7: an exit seen by the view is not undone by an older answer that said running", async () => {
@@ -859,18 +805,18 @@ describe("hub store", () => {
     detachers.push(store.attach("env_a", "a1"));
     await vi.advanceTimersByTimeAsync(0);
     expect(store.getView().error).toBeNull();
-    expect(store.getView().freshness).toBe("live");
+    expect(store.getView().lastKnown).toBe(false);
   });
 
   it("LIST-28: a check of the selection that never answers does not hold up the rest", async () => {
     const w = world({ terminals: [terminal({ id: "a1" })] });
-    const { sdk, store, detach } = open(w, ALL);
+    const { sdk, store, detach } = open(w, null);
     await vi.advanceTimersByTimeAsync(0);
     detach();
     await vi.advanceTimersByTimeAsync(0);
     sdk.terminals.get.mockImplementationOnce(() => new Promise(() => {}));
     sdk.threads.list.mockClear();
-    detachers.push(store.attach(ALL, "a1"));
+    detachers.push(store.attach("env_a", "a1"));
     await vi.advanceTimersByTimeAsync(RECONCILE_WAIT_MS);
     expect(sdk.threads.list).toHaveBeenCalled();
     expect(store.getView().lastKnown).toBe(false);
@@ -878,14 +824,14 @@ describe("hub store", () => {
 
   it("LIST-28: a return while the tab is hidden waits until it is shown, then checks the selection first", async () => {
     const w = world({ terminals: [terminal({ id: "a1" })] });
-    const { sdk, store, detach } = open(w, ALL);
+    const { sdk, store, detach } = open(w, null);
     await vi.advanceTimersByTimeAsync(0);
     detach();
     await vi.advanceTimersByTimeAsync(0);
     setVisibility("hidden");
     sdk.terminals.get.mockClear();
     sdk.threads.list.mockClear();
-    detachers.push(store.attach(ALL, "a1"));
+    detachers.push(store.attach("env_a", "a1"));
     await vi.advanceTimersByTimeAsync(FAST_REFRESH_MS);
     expect(sdk.terminals.get).not.toHaveBeenCalled();
     expect(sdk.threads.list).not.toHaveBeenCalled();
@@ -922,7 +868,7 @@ describe("hub store", () => {
     });
 
     it("LIST-30: ignores events-appended and other changes that do not touch the list", async () => {
-      const { sdk, emitThreadChanged } = open(twoEnvs(), ALL);
+      const { sdk, emitThreadChanged } = open(twoEnvs(), null);
       await vi.advanceTimersByTimeAsync(0);
       const before = counts(sdk);
       emitThreadChanged({ id: "thr_1", changes: ["events-appended"] });
@@ -933,7 +879,7 @@ describe("hub store", () => {
 
     it("LIST-30: terminals-changed lists that thread's terminals; an unknown thread of the project is fetched too", async () => {
       const w = twoEnvs();
-      const { sdk, ids, emitThreadChanged } = open(w, ALL);
+      const { sdk, ids, emitThreadChanged } = open(w, null);
       await vi.advanceTimersByTimeAsync(0);
       sdk.terminals.list.mockClear();
       w.terminals.push(terminal({ id: "t2", threadId: "thr_1" }));
@@ -969,7 +915,7 @@ describe("hub store", () => {
 
     it("LIST-30: status-changed with statusChange updates the thread without a request; title-changed fetches it", async () => {
       const w = twoEnvs();
-      const { sdk, store, emitThreadChanged } = open(w, ALL);
+      const { sdk, store, emitThreadChanged } = open(w, null);
       await vi.advanceTimersByTimeAsync(0);
       expect(store.getView().rows[0]?.stale).toBe(true);
       const before = counts(sdk);
@@ -994,7 +940,7 @@ describe("hub store", () => {
 
     it("LIST-30: environment-changed moves the thread's rows to its new environment", async () => {
       const w = twoEnvs();
-      const { store, emitThreadChanged } = open(w, ALL);
+      const { store, emitThreadChanged } = open(w, null);
       await vi.advanceTimersByTimeAsync(0);
       const section = (id: string) =>
         store
@@ -1016,7 +962,7 @@ describe("hub store", () => {
     it("LIST-30, LIST-11: thread-deleted treats its terminals as gone without fetching the thread", async () => {
       const w = twoEnvs();
       w.terminals.push(terminal({ id: "t_gone", threadId: "thr_1" }));
-      const { sdk, store, ids, emitThreadChanged } = open(w, ALL);
+      const { sdk, store, ids, emitThreadChanged } = open(w, null);
       await vi.advanceTimersByTimeAsync(0);
       const exited = w.terminals[0];
       if (!exited) throw new Error("fixture");
@@ -1035,7 +981,7 @@ describe("hub store", () => {
 
     it("LIST-30: one request per thread; a signal during it runs it once more afterwards", async () => {
       const w = twoEnvs();
-      const { sdk, ids, emitThreadChanged } = open(w, ALL);
+      const { sdk, ids, emitThreadChanged } = open(w, null);
       await vi.advanceTimersByTimeAsync(0);
       const real = sdk.terminals.list.getMockImplementation();
       const gates: (() => void)[] = [];
@@ -1062,7 +1008,7 @@ describe("hub store", () => {
 
     it("LIST-30: a stream of signals still refreshes within a second", async () => {
       const w = twoEnvs();
-      const { sdk, emitThreadChanged } = open(w, ALL);
+      const { sdk, emitThreadChanged } = open(w, null);
       await vi.advanceTimersByTimeAsync(0);
       sdk.terminals.list.mockClear();
       for (let i = 0; i < 6; i++) {
@@ -1074,7 +1020,7 @@ describe("hub store", () => {
 
     it("LIST-31, LIST-28: away, signals fetch nothing; on return the marked threads come after the selection and before the scan", async () => {
       const w = twoEnvs();
-      const { sdk, store, detach, emitThreadChanged } = open(w, ALL);
+      const { sdk, store, detach, emitThreadChanged } = open(w, null);
       await vi.advanceTimersByTimeAsync(0);
       detach();
       await vi.advanceTimersByTimeAsync(0);
@@ -1088,51 +1034,53 @@ describe("hub store", () => {
       sdk.terminals.list.mockClear();
       sdk.terminals.get.mockClear();
       sdk.threads.list.mockClear();
-      detachers.push(store.attach(ALL, "t1"));
+      detachers.push(store.attach("env_a", "t1"));
       await vi.advanceTimersByTimeAsync(0);
       const order = (fn: { mock: { invocationCallOrder: number[] } }, i = 0) =>
         fn.mock.invocationCallOrder[i] ?? -1;
       const marked = sdk.terminals.list.mock.calls.findIndex(
         ([args]) => args.scope.kind === "thread",
       );
+      const scan = sdk.threads.list.mock.calls.findIndex(([args]) => args.projectId === "proj_1");
       expect(order(sdk.terminals.get)).toBeLessThan(order(sdk.terminals.list, marked));
-      expect(order(sdk.terminals.list, marked)).toBeLessThan(order(sdk.threads.list));
+      // The marked thread is fetched before the project's full listing starts.
+      expect(order(sdk.threads.get)).toBeLessThan(order(sdk.threads.list, scan));
       expect(sdk.threads.get).toHaveBeenCalledWith({ threadId: "thr_1" });
       expect(store.getView().rows.map((r) => r.terminal.id)).toEqual(["t1", "t2"]);
     });
 
     it("LIST-27, LIST-28: while the connection is down the rows are last known; when it comes back, the list is confirmed again", async () => {
       const w = twoEnvs();
-      const { sdk, store, emitConnection } = open(w, ALL);
+      const { sdk, store, emitConnection } = open(w, null);
       await vi.advanceTimersByTimeAsync(0);
-      expect(store.getView().freshness).toBe("live");
+      expect(store.getView().lastKnown).toBe(false);
       emitConnection({ state: "disconnected", reconnected: false });
       expect(store.getView().lastKnown).toBe(true);
-      expect(store.getView().freshness).toBe("reconnecting");
+      expect(store.getView().lastKnown).toBe(true);
       expect(store.getView().complete).toBe(false);
 
       const scans = sdk.threads.list.mock.calls.length;
       emitConnection({ state: "connected", reconnected: true });
-      expect(store.getView().freshness).toBe("updating");
+      expect(store.getView().lastKnown).toBe(true);
       await vi.advanceTimersByTimeAsync(0);
       expect(sdk.threads.list.mock.calls.length).toBeGreaterThan(scans);
-      expect(store.getView().freshness).toBe("live");
+      expect(store.getView().lastKnown).toBe(false);
       expect(store.getView().complete).toBe(true);
     });
 
     it("LIST-27: the page's view of the connection counts too", async () => {
-      const { store } = open(twoEnvs(), ALL);
+      const { store } = open(twoEnvs(), null);
       await vi.advanceTimersByTimeAsync(0);
       store.setConnection("reconnecting");
-      expect(store.getView().freshness).toBe("reconnecting");
+      expect(store.getView().lastKnown).toBe(true);
       store.setConnection("connected");
       await vi.advanceTimersByTimeAsync(0);
-      expect(store.getView().freshness).toBe("live");
+      expect(store.getView().lastKnown).toBe(false);
     });
 
     it("LIST-14: an environment created elsewhere is listed at once, with its own terminals", async () => {
       const w = twoEnvs();
-      const { store, emitEnvironmentChanged } = open(w, ALL);
+      const { store, emitEnvironmentChanged } = open(w, null);
       await vi.advanceTimersByTimeAsync(0);
       w.environments.push({
         id: "env_c",
@@ -1178,7 +1126,7 @@ describe("hub store", () => {
       const bb = fakeSdk(world());
       bb.sdk.threads.list.mockRejectedValueOnce(new Error("bb is restarting"));
       const store = new HubStore(bb.sdk, "proj_1");
-      detachers.push(store.attach(ALL, null));
+      detachers.push(store.attach(null, null));
       await vi.advanceTimersByTimeAsync(0);
       expect(store.getView().complete).toBe(false);
       await vi.advanceTimersByTimeAsync(FAST_REFRESH_MS);
@@ -1227,7 +1175,7 @@ describe("hub store", () => {
 
     it("LIST-30: a status signal does not throw away a fetch of the thread already under way", async () => {
       const w = twoEnvs();
-      const { sdk, store, emitThreadChanged } = open(w, ALL);
+      const { sdk, store, emitThreadChanged } = open(w, null);
       await vi.advanceTimersByTimeAsync(0);
       const real = sdk.threads.get.getMockImplementation();
       let release: () => void = () => {};
@@ -1257,7 +1205,7 @@ describe("hub store", () => {
 
     it("LIST-30: a status signal during a fetch of only the thread's terminals still needs no request", async () => {
       const w = twoEnvs();
-      const { sdk, store, emitThreadChanged } = open(w, ALL);
+      const { sdk, store, emitThreadChanged } = open(w, null);
       await vi.advanceTimersByTimeAsync(0);
       const real = sdk.terminals.list.getMockImplementation();
       let release: () => void = () => {};
@@ -1282,7 +1230,7 @@ describe("hub store", () => {
 
     it("LIST-30: an environment's own terminals are listed one request at a time", async () => {
       const w = twoEnvs();
-      const { sdk, store } = open(w, ALL);
+      const { sdk, store } = open(w, null);
       await vi.advanceTimersByTimeAsync(0);
       const real = sdk.terminals.list.getMockImplementation();
       let release: () => void = () => {};
@@ -1303,7 +1251,7 @@ describe("hub store", () => {
 
     it("LIST-14: an environment created while the list is being fetched gets its terminals listed after the re-run", async () => {
       const w = twoEnvs();
-      const { sdk, store, emitEnvironmentChanged } = open(w, ALL);
+      const { sdk, store, emitEnvironmentChanged } = open(w, null);
       await vi.advanceTimersByTimeAsync(0);
       const real = sdk.environments.list.getMockImplementation();
       let release: () => void = () => {};
