@@ -1,30 +1,39 @@
-// NAV-6: the running count in the page's title bar. It takes the store for
-// the project and environment in the URL as it renders, so it never shows
-// another project's count, and it never starts requests of its own.
+// NAV-6: where the user is, `project / environment`, and how many terminals
+// run there, in the page's title bar. It reads the page's hub as it renders,
+// for the project and environment in the URL, and never starts requests.
 import { type PluginNavPanelProps, useSdk } from "@get-bb/plugin-sdk/app";
 import { useSyncExternalStore } from "react";
-import { type HubSdk, type HubStore, type HubView, hubStoreFor } from "@/lib/hub-store";
-import { ALL, parseRoute } from "@/lib/route";
-
-const noView = (): HubView | null => null;
-const noSubscription = () => () => {};
+import { hubFor } from "@/lib/hub";
+import type { HubSdk } from "@/lib/hub-store";
+import { parseRoute } from "@/lib/route";
 
 export function HeaderCount({ subPath }: PluginNavPanelProps) {
   const sdk: HubSdk = useSdk();
-  const route = parseRoute(subPath);
-  const store: HubStore | null = route.projectId ? hubStoreFor(sdk, route.projectId) : null;
-  const view = useSyncExternalStore(
-    store?.subscribe ?? noSubscription,
-    store ? () => store.viewFor(route.environment) : noView,
-  );
-  if (!view) return null;
-  const scope = view.environment === ALL ? "in this project" : "in this environment";
+  const hub = hubFor(sdk);
+  const snapshot = useSyncExternalStore(hub.subscribe, hub.getSnapshot);
+  const { projectId, environmentId } = parseRoute(subPath);
+  if (projectId === null || environmentId === null) return null;
+  const project = snapshot.projects?.find((p) => p.id === projectId);
+  const view = snapshot.views.get(projectId);
+  const section = view?.sections.find((s) => s.environment.id === environmentId);
+  if (!project || !section) return null;
+  const running = section.running;
   return (
-    <span
-      className="text-xs tabular-nums text-muted-foreground"
-      title={view.lastKnown ? `Last known; checking again` : `Running ${scope}`}
-    >
-      {view.lastKnown ? `Last known · ${view.running} running` : `${view.running} running`}
+    <span className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
+      <span
+        data-header-place=""
+        className="min-w-0 truncate"
+        title={`${project.name} / ${section.environment.name}`}
+      >
+        {project.name} / <span className="font-mono">{section.environment.name}</span>
+      </span>
+      <span
+        data-header-count=""
+        className="shrink-0 tabular-nums"
+        title={snapshot.lastKnown ? "Last known; checking again" : "Running in this environment"}
+      >
+        {snapshot.lastKnown ? `Last known · ${running} running` : `${running} running`}
+      </span>
     </span>
   );
 }

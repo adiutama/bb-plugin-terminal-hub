@@ -1,41 +1,25 @@
-// Where the user was on the Terminals page, per project, until bb reloads
-// (ADR 202610111227): the route (NAV-10), collapsed sections (LIST-13), the
-// list's scroll position (LIST-29), and the filter (LIST-21).
+// Where the user was on the Terminals page, until bb reloads: the environment
+// it last showed (NAV-4), each environment's last tab (LIST-36), folded
+// projects (LIST-35), the rail's scroll position (LIST-29), and the find
+// text (LIST-43).
 
-/** LIST-29: the row at the top of the list, and how far below the top it sat. */
+/** LIST-29: the environment at the top of the rail, and how far below the top it sat. */
 export interface ScrollAnchor {
-  terminalId: string;
-  /** The row's top minus the list's top, in pixels; negative when cut off. */
+  environmentId: string;
+  /** The item's top minus the rail's top, in pixels; negative when cut off. */
   offset: number;
 }
 
-export interface ProjectMemory {
-  /** NAV-10: the environment (or `all`) and terminal last shown. */
-  route: { environment: string; terminalId: string | null } | null;
-  collapsed: ReadonlySet<string>;
-  scroll: ScrollAnchor | null;
-}
-
 export class PageMemory {
-  private projects = new Map<string, ProjectMemory>();
-  /** NAV-4: the project the page last showed. */
-  lastProjectId: string | null = null;
-  /** LIST-21: one filter, for the project it was typed in. */
-  filter: { projectId: string; text: string } | null = null;
-
-  project(projectId: string): ProjectMemory {
-    let memory = this.projects.get(projectId);
-    if (!memory) {
-      memory = { route: null, collapsed: new Set(), scroll: null };
-      this.projects.set(projectId, memory);
-    }
-    return memory;
-  }
-
-  /** The filter typed in `projectId`, or empty for any other project. */
-  filterFor(projectId: string): string {
-    return this.filter?.projectId === projectId ? this.filter.text : "";
-  }
+  /** NAV-4: the environment the page last showed. */
+  lastEnvironment: string | null = null;
+  /** LIST-36: environment id → the tab it last showed. */
+  readonly tabs = new Map<string, string>();
+  /** LIST-35: folded projects. */
+  folded: ReadonlySet<string> = new Set();
+  scroll: ScrollAnchor | null = null;
+  /** LIST-43: the rail's find text. */
+  find = "";
 }
 
 const memories = new WeakMap<object, PageMemory>();
@@ -50,32 +34,34 @@ export function pageMemoryFor(sdk: object): PageMemory {
   return memory;
 }
 
+const ITEM = "[data-environment-id]";
+
 /**
- * LIST-29: the first row whose bottom is below the top of `scroller`, and its
- * offset from that top. Rows carry `data-terminal-id`.
+ * LIST-29: the first rail item whose bottom is below the top of `scroller`,
+ * and its offset from that top. Items carry `data-environment-id`.
  */
 export function readScrollAnchor(scroller: HTMLElement): ScrollAnchor | null {
   const top = scroller.getBoundingClientRect().top;
-  for (const row of scroller.querySelectorAll<HTMLElement>("[data-terminal-id]")) {
-    const box = row.getBoundingClientRect();
+  for (const item of scroller.querySelectorAll<HTMLElement>(ITEM)) {
+    const box = item.getBoundingClientRect();
     if (box.bottom > top) {
-      const terminalId = row.dataset.terminalId;
-      if (terminalId) return { terminalId, offset: box.top - top };
+      const environmentId = item.dataset.environmentId;
+      if (environmentId) return { environmentId, offset: box.top - top };
     }
   }
   return null;
 }
 
 /**
- * LIST-29: scrolls so the anchor row sits where it was. False when the row
+ * LIST-29: scrolls so the anchor item sits where it was. False when the item
  * is not rendered.
  */
 export function applyScrollAnchor(scroller: HTMLElement, anchor: ScrollAnchor): boolean {
-  const row = [...scroller.querySelectorAll<HTMLElement>("[data-terminal-id]")].find(
-    (candidate) => candidate.dataset.terminalId === anchor.terminalId,
+  const item = [...scroller.querySelectorAll<HTMLElement>(ITEM)].find(
+    (candidate) => candidate.dataset.environmentId === anchor.environmentId,
   );
-  if (!row) return false;
-  const delta = row.getBoundingClientRect().top - scroller.getBoundingClientRect().top;
+  if (!item) return false;
+  const delta = item.getBoundingClientRect().top - scroller.getBoundingClientRect().top;
   scroller.scrollTop += delta - anchor.offset;
   return true;
 }

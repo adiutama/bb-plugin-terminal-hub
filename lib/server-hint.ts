@@ -1,4 +1,4 @@
-// LIST-7: a local server address in recent output, shown on the row.
+// LIST-7: a local server address in recent output, shown on the tab and the bar.
 
 /** How much recent output the hint is read from. */
 export const HINT_TAIL_BYTES = 4096;
