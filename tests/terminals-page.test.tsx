@@ -139,6 +139,19 @@ const tabNames = () =>
     .map((tab) => tab.textContent);
 const bar = () => within(screen.getByRole("region", { name: "Terminal" }));
 
+/** Opens a "New terminal in…" menu from its trigger (LIST-50). */
+async function openNewTerminal(trigger: HTMLElement) {
+  fireEvent.click(trigger);
+  return screen.findByRole("dialog", { name: "New terminal in…" });
+}
+const options = (menu: HTMLElement) =>
+  within(menu)
+    .queryAllByRole("option")
+    .map((option) => option.textContent);
+const menuSearch = (menu: HTMLElement) =>
+  within(menu).getByRole<HTMLInputElement>("combobox", { name: "New terminal in…" });
+const main = () => within(screen.getByRole("main"));
+
 /** Leaves the page long enough to count as leaving it. */
 async function away(page: { leave(): void }) {
   page.leave();
@@ -466,16 +479,13 @@ describe("rail", () => {
     });
     const page = await mountPage(w, "proj_1/env_a/a1");
     await waitFor(() => expect(railItems()).toEqual(["env_a"]));
-    const menu = await openMenu(
+    const menu = await openNewTerminal(
       rail().getByRole("button", { name: "New terminal in Project one…" }),
     );
-    expect(within(menu).getByText("New terminal in…")).toBeInTheDocument();
-    expect(
-      within(menu)
-        .getAllByRole("menuitem")
-        .map((item) => item.textContent),
-    ).toEqual(["main", "bb/feature-x", "idle-tree"]);
-    fireEvent.click(within(menu).getByRole("menuitem", { name: "idle-tree" }));
+    await waitFor(() => expect(options(menu)).toEqual(["main", "bb/feature-x", "idle-tree"]));
+    // Only this project's environments, without a group for other projects.
+    expect(within(menu).queryByRole("group", { name: "Project two" })).toBeNull();
+    fireEvent.click(within(menu).getByRole("option", { name: "idle-tree" }));
     await waitFor(() => expect(page.subPath()).toBe("proj_1/env_empty/term_new_1"));
     expect(page.sdk.terminals.create).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -557,53 +567,6 @@ describe("rail", () => {
     await away(page);
     page.returnTo("proj_1/env_a/a1");
     expect(findField().value).toBe("nowhere");
-  });
-
-  it("LIST-44: `/` focuses the find field and selects its text, but not from a text field; no Cmd/Ctrl+K", async () => {
-    const w = world({ terminals: [terminal({ id: "a1" })] });
-    await mountPage(w, "proj_1/env_a/a1");
-    await screen.findByTestId("terminal-view");
-    fireEvent.change(findField(), { target: { value: "ma" } });
-    const tab = tabs().getByRole("tab", { name: "a1" });
-    tab.focus();
-    fireEvent.keyDown(tab, { key: "/" });
-    expect(document.activeElement).toBe(findField());
-    expect(findField().selectionStart).toBe(0);
-    expect(findField().selectionEnd).toBe(2);
-    // Cmd/Ctrl+K is bb's thread switcher: the page leaves it alone.
-    tab.focus();
-    const k = new KeyboardEvent("keydown", {
-      key: "k",
-      metaKey: true,
-      bubbles: true,
-      cancelable: true,
-    });
-    tab.dispatchEvent(k);
-    expect(k.defaultPrevented).toBe(false);
-    expect(document.activeElement).toBe(tab);
-  });
-
-  it("LIST-44: in the field, Escape clears, then moves to the selected environment; ↓ enters the rail; Enter selects the first shown", async () => {
-    const w = twoProjects({
-      terminals: [terminal({ id: "a1" }), terminal({ id: "c1", environmentId: "env_c" })],
-    });
-    const page = await mountPage(w, "proj_1/env_a/a1");
-    await waitFor(() => expect(railItems()).toHaveLength(2));
-    const field = findField();
-    field.focus();
-    fireEvent.change(field, { target: { value: "trunk" } });
-    fireEvent.keyDown(field, { key: "Escape" });
-    expect(field.value).toBe("");
-    expect(document.activeElement).toBe(field);
-    fireEvent.keyDown(field, { key: "Escape" });
-    expect(document.activeElement).toBe(railItem("env_a"));
-    field.focus();
-    fireEvent.keyDown(field, { key: "ArrowDown" });
-    expect(document.activeElement).toBe(railItem("env_a"));
-    field.focus();
-    fireEvent.change(field, { target: { value: "trunk" } });
-    fireEvent.keyDown(field, { key: "Enter" });
-    await waitFor(() => expect(page.subPath()).toBe("proj_2/env_c/c1"));
   });
 
   it("LIST-45: ↓ and ↑ move between environments without wrapping or selecting; ↑ from the first returns to the find field", async () => {
@@ -714,18 +677,14 @@ describe("rail", () => {
     const page = await mountPage(twoProjects(), "", { projectId: null });
     expect(await screen.findByText("Nothing running.")).toBeInTheDocument();
     expect(page.subPath()).toBe("");
-    const menu = await openMenu(screen.getByRole("button", { name: "New terminal in…" }));
+    const menu = await openNewTerminal(main().getByRole("button", { name: "New terminal in…" }));
     expect(
       within(menu)
         .getAllByRole("group")
         .map((group) => group.getAttribute("aria-label")),
     ).toEqual(["Project one", "Project two"]);
-    expect(
-      within(menu)
-        .getAllByRole("menuitem")
-        .map((item) => item.textContent),
-    ).toEqual(["main", "bb/feature-x", "trunk"]);
-    fireEvent.click(within(menu).getByRole("menuitem", { name: "trunk" }));
+    await waitFor(() => expect(options(menu)).toEqual(["main", "bb/feature-x", "trunk"]));
+    fireEvent.click(within(menu).getByRole("option", { name: "trunk" }));
     await waitFor(() => expect(page.subPath()).toBe("proj_2/env_c/term_new_1"));
     expect(page.sdk.terminals.create).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -743,7 +702,7 @@ describe("rail", () => {
       await screen.findByText("Could not list every terminal yet; trying again shortly."),
     ).toBeInTheDocument();
     expect(screen.queryByText(/Nothing running/)).toBeNull();
-    expect(screen.queryByRole("button", { name: "New terminal in…" })).toBeNull();
+    expect(main().queryByRole("button", { name: "New terminal in…" })).toBeNull();
 
     cleanup();
     await mountPage(twoProjects(), "", { projectId: null }, (sdk) => {
@@ -752,7 +711,7 @@ describe("rail", () => {
     expect(
       await screen.findByText("Looking for terminals…", { selector: "p" }),
     ).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "New terminal in…" })).toBeNull();
+    expect(main().queryByRole("button", { name: "New terminal in…" })).toBeNull();
   });
 });
 
@@ -1238,30 +1197,7 @@ it("NAV-5: a dead link is resolved even when another environment cannot be liste
   await waitFor(() => expect(page.subPath()).toBe("proj_1/env_a/a1"));
 });
 
-describe("tab close and shortcuts", () => {
-  /** A stand-in for bb's own shortcut handling, registered at the document. */
-  function bbListener() {
-    const seen: string[] = [];
-    const listener = (event: KeyboardEvent) => seen.push(event.key);
-    document.addEventListener("keydown", listener, { capture: true });
-    return {
-      seen,
-      stop: () => document.removeEventListener("keydown", listener, { capture: true }),
-    };
-  }
-  /** Presses Mod+`key` (Ctrl outside macOS, as in jsdom) on `target`. */
-  function mod(target: Element, key: string) {
-    const event = new KeyboardEvent("keydown", {
-      key,
-      ctrlKey: true,
-      bubbles: true,
-      cancelable: true,
-    });
-    act(() => {
-      target.dispatchEvent(event);
-    });
-    return event;
-  }
+describe("tab close", () => {
   const closeButton = (name: string) =>
     screen.getByRole("button", { name: new RegExp(`^(Close|Dismiss) ${name}$`) });
 
@@ -1317,100 +1253,6 @@ describe("tab close and shortcuts", () => {
     await waitFor(() => expect(tabs().queryAllByRole("tab")).toHaveLength(0));
     expect(page.sdk.terminals.close).not.toHaveBeenCalled();
   });
-
-  it("LIST-47, LIST-40: Mod+T starts a shell in the selected environment as the rightmost tab, before bb or the shell sees the key", async () => {
-    const w = world({
-      terminals: [terminal({ id: "t1", title: "one", createdAt: 1 })],
-    });
-    const page = await mountPage(w, "proj_1/env_a/t1");
-    const terminalView = await screen.findByTestId("terminal-view");
-    const bb = bbListener();
-    try {
-      const event = mod(terminalView, "t");
-      expect(event.defaultPrevented).toBe(true);
-      expect(bb.seen).toEqual([]);
-      await waitFor(() => expect(page.subPath()).toBe("proj_1/env_a/term_new_1"));
-      expect(tabNames()).toEqual(["one", "zsh"]);
-      expect(page.navigations().at(-1)?.replace).toBe(false);
-    } finally {
-      bb.stop();
-    }
-  });
-
-  it("LIST-47, ACT-7: Mod+W does what the selected tab's × does", async () => {
-    const w = world({
-      threads: [thread({ id: "thr_1", title: "Release prep", status: "active" })],
-      terminals: [
-        terminal({ id: "t1", title: "one", createdAt: 1 }),
-        terminal({ id: "t2", title: "two", threadId: "thr_1", createdAt: 2 }),
-      ],
-    });
-    const page = await mountPage(w, "proj_1/env_a/t1");
-    const terminalView = await screen.findByTestId("terminal-view");
-    mod(terminalView, "w");
-    await waitFor(() => expect(page.subPath()).toBe("proj_1/env_a/t2"));
-    expect(page.sdk.terminals.close).toHaveBeenCalledWith({ terminalId: "t1", mode: "force" });
-    mod(await screen.findByTestId("terminal-view"), "W");
-    expect(await screen.findByRole("dialog")).toHaveTextContent("Release prep");
-  });
-
-  it("LIST-47: Mod+P focuses the find field and selects its text", async () => {
-    await mountPage(world({ terminals: [terminal({ id: "t1" })] }), "proj_1/env_a/t1");
-    const terminalView = await screen.findByTestId("terminal-view");
-    fireEvent.change(findField(), { target: { value: "main" } });
-    terminalView.focus();
-    const event = mod(document.body, "p");
-    expect(event.defaultPrevented).toBe(true);
-    expect(document.activeElement).toBe(findField());
-    expect(findField().selectionStart).toBe(0);
-    expect(findField().selectionEnd).toBe(4);
-  });
-
-  it("LIST-47: with a dialog or menu open, focus outside the page, other modifiers, or the page left, the keys keep bb's meaning", async () => {
-    const w = world({
-      threads: [thread({ id: "thr_1", status: "active" })],
-      terminals: [terminal({ id: "t1", title: "one", threadId: "thr_1" })],
-    });
-    const page = await mountPage(w, "proj_1/env_a/t1");
-    const terminalView = await screen.findByTestId("terminal-view");
-    const bb = bbListener();
-    try {
-      // A dialog is open: Mod+W does not reach the page.
-      mod(terminalView, "w");
-      const dialog = await screen.findByRole("dialog");
-      expect(bb.seen).toEqual([]);
-      expect(mod(dialog, "w").defaultPrevented).toBe(false);
-      expect(bb.seen).toEqual(["w"]);
-      fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
-      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
-
-      // Focus in bb's own UI, outside the page.
-      const outside = document.createElement("input");
-      document.body.append(outside);
-      outside.focus();
-      expect(mod(outside, "t").defaultPrevented).toBe(false);
-      outside.remove();
-
-      // Other modifiers, and Mod+K, are bb's.
-      const shifted = new KeyboardEvent("keydown", {
-        key: "t",
-        ctrlKey: true,
-        shiftKey: true,
-        bubbles: true,
-        cancelable: true,
-      });
-      document.body.dispatchEvent(shifted);
-      expect(shifted.defaultPrevented).toBe(false);
-      expect(mod(document.body, "k").defaultPrevented).toBe(false);
-      expect(page.sdk.terminals.create).not.toHaveBeenCalled();
-
-      await away(page);
-      expect(mod(document.body, "t").defaultPrevented).toBe(false);
-      expect(page.sdk.terminals.create).not.toHaveBeenCalled();
-    } finally {
-      bb.stop();
-    }
-  });
 });
 
 it("LIST-34, VIEW-9: same-named environments of a project are told apart by the part of the path that differs, in the rail, the menu, and the bar", async () => {
@@ -1443,17 +1285,17 @@ it("LIST-34, VIEW-9: same-named environments of a project are told apart by the 
   );
   expect(railItem("env_other")).toHaveTextContent(/^feature\/review1$/);
   expect(bar().getByText("Project one/feature/review · review-pr-CuiApF")).toBeTruthy();
-  const menu = await openMenu(rail().getByRole("button", { name: "New terminal in Project one…" }));
-  expect(
-    within(menu)
-      .getAllByRole("menuitem")
-      .map((item) => item.textContent),
-  ).toEqual([
-    "main",
-    "bb/feature-x",
-    "feature/review · review-pr-CuiApF",
-    "feature/review · review-pr-Pn4Tl8",
-  ]);
+  const menu = await openNewTerminal(
+    rail().getByRole("button", { name: "New terminal in Project one…" }),
+  );
+  await waitFor(() =>
+    expect(options(menu)).toEqual([
+      "main",
+      "bb/feature-x",
+      "feature/review · review-pr-CuiApF",
+      "feature/review · review-pr-Pn4Tl8",
+    ]),
+  );
 });
 
 describe("folder checks in New terminal in…", () => {
@@ -1480,11 +1322,10 @@ describe("folder checks in New terminal in…", () => {
       });
     });
     await waitFor(() => expect(railItems()).toEqual(["env_a"]));
-    const items = (menu: HTMLElement) =>
-      within(menu)
-        .queryAllByRole("menuitem")
-        .map((item) => item.textContent);
-    let menu = await openMenu(rail().getByRole("button", { name: "New terminal in Project one…" }));
+    const items = options;
+    let menu = await openNewTerminal(
+      rail().getByRole("button", { name: "New terminal in Project one…" }),
+    );
     await waitFor(() => expect(items(menu)).toEqual(["main", "bb/feature-x", "locked"]));
     expect(within(menu).getByText("Checking folders…")).toBeInTheDocument();
     releaseSlow();
@@ -1498,10 +1339,12 @@ describe("folder checks in New terminal in…", () => {
     );
 
     // Kept until bb reloads: opening again asks nothing.
-    fireEvent.keyDown(menu, { key: "Escape" });
-    await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
+    fireEvent.keyDown(menuSearch(menu), { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     const asked = page.sdk.hosts.directory.mock.calls.length;
-    menu = await openMenu(rail().getByRole("button", { name: "New terminal in Project one…" }));
+    menu = await openNewTerminal(
+      rail().getByRole("button", { name: "New terminal in Project one…" }),
+    );
     expect(items(menu)).toEqual(["main", "bb/feature-x", "locked", "slow"]);
     expect(page.sdk.hosts.directory.mock.calls.length).toBe(asked);
   });
@@ -1510,14 +1353,172 @@ describe("folder checks in New terminal in…", () => {
     const w = twoProjects({ missingFolders: ["/Users/me/wt/feature-x"] });
     await mountPage(w, "", { projectId: null });
     await screen.findByText("Nothing running.");
-    const menu = await openMenu(screen.getByRole("button", { name: "New terminal in…" }));
-    await waitFor(() =>
-      expect(
-        within(menu)
-          .getAllByRole("menuitem")
-          .map((item) => item.textContent),
-      ).toEqual(["main", "trunk"]),
-    );
+    const menu = await openNewTerminal(main().getByRole("button", { name: "New terminal in…" }));
+    await waitFor(() => expect(options(menu)).toEqual(["main", "trunk"]));
     expect(within(menu).queryByText("Checking folders…")).toBeNull();
+  });
+});
+
+describe("New terminal in… search and the rail's +", () => {
+  /** kai-platform-like: many environments in one project, one in another. */
+  const manyEnvironments = () =>
+    twoProjects({
+      environments: [
+        ...twoProjects().environments,
+        ...Array.from({ length: 40 }, (_, i) =>
+          environment(`env_w${i}`, "proj_1", {
+            name: `bb/task-${i}-${i % 2 ? "billing" : "docs"}`,
+          }),
+        ),
+      ],
+      terminals: [terminal({ id: "a1" })],
+    });
+
+  it("LIST-49: a + beside the find field always opens New terminal in… for every project, grouped by project", async () => {
+    const w = twoProjects();
+    const page = await mountPage(w, "", { projectId: null });
+    await screen.findByText("Nothing running.");
+    // There even with nothing listed in the rail.
+    const plus = rail().getByRole("button", { name: "New terminal in…" });
+    const menu = await openNewTerminal(plus);
+    await waitFor(() => expect(options(menu)).toEqual(["main", "bb/feature-x", "trunk"]));
+    expect(
+      within(menu)
+        .getAllByRole("group")
+        .map((group) => group.getAttribute("aria-label")),
+    ).toEqual(["Project one", "Project two"]);
+    fireEvent.click(within(menu).getByRole("option", { name: "bb/feature-x" }));
+    await waitFor(() => expect(page.subPath()).toBe("proj_1/env_b/term_new_1"));
+    expect(page.navigations().at(-1)?.replace).toBe(false);
+    // Still there once something is listed.
+    expect(rail().getByRole("button", { name: "New terminal in…" })).toBeInTheDocument();
+  });
+
+  it("LIST-50: opens with focus in its search field, which narrows by every word in the environment's or project's name", async () => {
+    await mountPage(manyEnvironments(), "proj_1/env_a/a1");
+    await waitFor(() => expect(railItems()).toEqual(["env_a"]));
+    const menu = await openNewTerminal(rail().getByRole("button", { name: "New terminal in…" }));
+    const search = menuSearch(menu);
+    expect(document.activeElement).toBe(search);
+    await waitFor(() => expect(options(menu)).toHaveLength(43));
+    fireEvent.change(search, { target: { value: "BILLING 1" } });
+    expect(options(menu)).toEqual([
+      "bb/task-1-billing",
+      "bb/task-11-billing",
+      "bb/task-13-billing",
+      "bb/task-15-billing",
+      "bb/task-17-billing",
+      "bb/task-19-billing",
+      "bb/task-21-billing",
+      "bb/task-31-billing",
+    ]);
+    // Project names match too; empty groups are left out.
+    fireEvent.change(search, { target: { value: "two" } });
+    expect(options(menu)).toEqual(["trunk"]);
+    expect(within(menu).queryByRole("group", { name: "Project one" })).toBeNull();
+    fireEvent.change(search, { target: { value: "   " } });
+    expect(options(menu)).toHaveLength(43);
+    fireEvent.change(search, { target: { value: "nowhere" } });
+    expect(options(menu)).toEqual([]);
+    expect(within(menu).getByText("No environment matches “nowhere”.")).toBeInTheDocument();
+  });
+
+  it("LIST-50: ↓ and ↑ move the highlight, Enter starts a shell in it (the first until moved), Escape closes", async () => {
+    const page = await mountPage(manyEnvironments(), "proj_1/env_a/a1");
+    await waitFor(() => expect(railItems()).toEqual(["env_a"]));
+    let menu = await openNewTerminal(rail().getByRole("button", { name: "New terminal in…" }));
+    let search = menuSearch(menu);
+    fireEvent.keyDown(search, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(page.sdk.terminals.create).not.toHaveBeenCalled();
+
+    menu = await openNewTerminal(rail().getByRole("button", { name: "New terminal in…" }));
+    search = menuSearch(menu);
+    fireEvent.change(search, { target: { value: "docs" } });
+    const highlighted = () =>
+      within(menu)
+        .getAllByRole("option")
+        .find((option) => option.getAttribute("aria-selected") === "true")?.textContent;
+    expect(highlighted()).toBe("bb/task-0-docs");
+    expect(search).toHaveAttribute("aria-activedescendant");
+    fireEvent.keyDown(search, { key: "ArrowDown" });
+    fireEvent.keyDown(search, { key: "ArrowDown" });
+    fireEvent.keyDown(search, { key: "ArrowUp" });
+    expect(highlighted()).toBe("bb/task-2-docs");
+    fireEvent.keyDown(search, { key: "ArrowUp" });
+    fireEvent.keyDown(search, { key: "ArrowUp" });
+    expect(highlighted()).toBe("bb/task-0-docs");
+    fireEvent.keyDown(search, { key: "ArrowDown" });
+    fireEvent.keyDown(search, { key: "Enter" });
+    await waitFor(() => expect(page.subPath()).toBe("proj_1/env_w2/term_new_1"));
+    expect(screen.queryByRole("dialog")).toBeNull();
+
+    // Unmoved, Enter takes the first.
+    menu = await openNewTerminal(rail().getByRole("button", { name: "New terminal in…" }));
+    search = menuSearch(menu);
+    expect(search.value).toBe("");
+    fireEvent.change(search, { target: { value: "trunk" } });
+    fireEvent.keyDown(search, { key: "Enter" });
+    await waitFor(() => expect(page.subPath()).toBe("proj_2/env_c/term_new_2"));
+  });
+
+  it("LIST-50, LIST-48: search works over environments that arrive as their folder checks succeed", async () => {
+    let release: () => void = () => {};
+    await mountPage(manyEnvironments(), "proj_1/env_a/a1", undefined, (sdk) => {
+      const real = sdk.hosts.directory.getMockImplementation();
+      const { promise, release: open } = gate();
+      release = open;
+      sdk.hosts.directory.mockImplementation(async (args) => {
+        if (args.path === "/Users/me/env_w7") await promise;
+        return real?.(args) as never;
+      });
+    });
+    await waitFor(() => expect(railItems()).toEqual(["env_a"]));
+    const menu = await openNewTerminal(rail().getByRole("button", { name: "New terminal in…" }));
+    fireEvent.change(menuSearch(menu), { target: { value: "task-7" } });
+    await waitFor(() => expect(within(menu).getByText("Checking folders…")).toBeInTheDocument());
+    expect(options(menu)).toEqual([]);
+    release();
+    await waitFor(() => expect(options(menu)).toEqual(["bb/task-7-billing"]));
+    expect(within(menu).queryByText("Checking folders…")).toBeNull();
+  });
+
+  it("LIST-45: in the find field, ↓ enters the rail, Enter selects the first shown, Escape clears; the field shows no key hint and `/` is not bound", async () => {
+    const w = twoProjects({
+      terminals: [terminal({ id: "a1" }), terminal({ id: "c1", environmentId: "env_c" })],
+    });
+    const page = await mountPage(w, "proj_1/env_a/a1");
+    await waitFor(() => expect(railItems()).toHaveLength(2));
+    expect(rail().queryByText("/")).toBeNull();
+    const field = findField();
+    field.focus();
+    fireEvent.keyDown(field, { key: "ArrowDown" });
+    expect(document.activeElement).toBe(railItem("env_a"));
+    field.focus();
+    fireEvent.change(field, { target: { value: "trunk" } });
+    fireEvent.keyDown(field, { key: "Escape" });
+    expect(field.value).toBe("");
+    expect(document.activeElement).toBe(field);
+    fireEvent.change(field, { target: { value: "trunk" } });
+    fireEvent.keyDown(field, { key: "Enter" });
+    await waitFor(() => expect(page.subPath()).toBe("proj_2/env_c/c1"));
+
+    // No page shortcuts: `/` and Mod+T / Mod+W / Mod+P are left alone.
+    const tab = tabs().getByRole("tab", { name: "c1" });
+    tab.focus();
+    for (const init of [
+      { key: "/" },
+      { key: "t", ctrlKey: true },
+      { key: "w", ctrlKey: true },
+      { key: "p", ctrlKey: true },
+      { key: "t", metaKey: true },
+    ]) {
+      const event = new KeyboardEvent("keydown", { ...init, bubbles: true, cancelable: true });
+      tab.dispatchEvent(event);
+      expect(event.defaultPrevented).toBe(false);
+    }
+    expect(document.activeElement).toBe(tab);
+    expect(page.sdk.terminals.create).not.toHaveBeenCalled();
+    expect(page.sdk.terminals.close).not.toHaveBeenCalled();
   });
 });
