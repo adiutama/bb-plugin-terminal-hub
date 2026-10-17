@@ -10,7 +10,7 @@ open them, read their logs, and stop them.
 
 ## Behaviour
 
-A "Services" button in the Terminals rail's header opens a large modal holding a table, not the rail and tabs: services are rows
+A "Services" button in the Terminals page's title bar, beside its close button, opens a large modal holding a table, not the rail and tabs: services are rows
 to scan (which ports are taken, what is still up), with the log one click
 away in a drawer.
 
@@ -35,7 +35,7 @@ is in the drawer.
 
 ## Rules
 
-- **SVC-1** The plugin registers no page for services. A "Services" button in the Terminals rail's header, beside "Find environment" and its `+`, opens the Services modal, and shows the number of listed services when it is above zero. (ADR 202610171823)
+- **SVC-1** The plugin registers no page for services. A "Services" button on the right of the Terminals page's title bar, beside bb's close button (the `navPanel`'s `headerContent`), opens the Services modal, and shows the number of listed services when it is above zero. (ADR 202610171823)
 - **SVC-2** A process on the machine running bb is listed when it listens on a TCP port and belongs to an environment: the one its `BB_ENVIRONMENT_ID` environment variable names, when bb knows it; else the one whose `path` is its working folder or contains it. When its environment variables cannot be read, only the folder applies. (ADR 202610171823)
 - **SVC-3** A process that has a controlling terminal, or whose environment has `BB_TERMINAL_SESSION_ID`, is not listed. (ADR 202610171823)
 - **SVC-18** A process whose `BB_THREAD_ID` names a thread bb knows shows that thread's title, linked to the thread, in a "Started by" column; otherwise the cell is empty. (ADR 202610171823)
