@@ -1,9 +1,17 @@
 import { describe, expect, it } from "vitest";
-import { shortenHome } from "../lib/paths";
+import { folderLabel, shortenHome } from "../lib/paths";
 import { findServerHint, OutputTail } from "../lib/server-hint";
 
-describe("row details", () => {
-  it("LIST-6: shows the starting directory with the host's home directory as ~", () => {
+describe("terminal details", () => {
+  it("VIEW-9: shows the starting folder relative to the environment, left out at its path, else with home as ~", () => {
+    expect(folderLabel("/Users/me/repo/apps/web", "/Users/me/repo", "/Users/me")).toBe("apps/web");
+    expect(folderLabel("/Users/me/repo", "/Users/me/repo", "/Users/me")).toBe("");
+    expect(folderLabel("/Users/me/repo/", "/Users/me/repo/", "/Users/me")).toBe("");
+    expect(folderLabel("/Users/me/repo-two", "/Users/me/repo", "/Users/me")).toBe("~/repo-two");
+    expect(folderLabel("/srv/app", "", "/Users/me")).toBe("/srv/app");
+  });
+
+  it("VIEW-9: shows a folder outside the environment with the host's home directory as ~", () => {
     expect(shortenHome("/Users/me/repo", "/Users/me")).toBe("~/repo");
     expect(shortenHome("/Users/me", "/Users/me/")).toBe("~");
     expect(shortenHome("/Users/meadow/repo", "/Users/me")).toBe("/Users/meadow/repo");

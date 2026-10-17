@@ -22,6 +22,7 @@ export interface MountedPage {
   slot: RenderedSlot;
   sdk: ReturnType<typeof fakeSdk>["sdk"];
   emitThreadChanged: ReturnType<typeof fakeSdk>["emitThreadChanged"];
+  world: World;
   /** The subPath the page is showing now. */
   subPath(): string;
   /** toPluginPanel calls, in order. */
@@ -39,7 +40,9 @@ export interface MountedPage {
 export async function mountPage(
   w: World,
   subPath: string,
-  context: { projectId?: string | null } = { projectId: "proj_1" },
+  context: { projectId?: string | null; threadId?: string | null } = { projectId: "proj_1" },
+  /** Runs on the fake SDK before the page mounts, to hold or fail calls. */
+  prepare?: (sdk: ReturnType<typeof fakeSdk>["sdk"]) => void,
 ): Promise<MountedPage> {
   const app = await loadApp();
   const panel = app.navPanels[0];
@@ -58,10 +61,15 @@ export async function mountPage(
       <div data-testid="elsewhere" />
     );
   const bb = fakeSdk(w);
+  prepare?.(bb.sdk);
   let current = subPath;
   let open = true;
   let followed = 0;
-  const slot = renderSlot({ component: Shell }, { subPath }, { sdk: bb.sdk as any, context });
+  const slot = renderSlot(
+    { component: Shell },
+    { subPath },
+    { sdk: bb.sdk as any, context: { threadId: null, ...context } },
+  );
   const navigations = () =>
     slot.inspection.navigateCalls.flatMap((call) =>
       call.method === "toPluginPanel"
@@ -84,6 +92,7 @@ export async function mountPage(
     slot,
     sdk: bb.sdk,
     emitThreadChanged: bb.emitThreadChanged,
+    world: w,
     subPath: () => current,
     navigations,
     goTo: (subPath) => {
@@ -104,9 +113,8 @@ export async function mountPage(
   };
 }
 
-/** Opens a row's action menu with the keyboard, as Radix expects in jsdom. */
-export async function openRowMenu(title: string) {
-  const trigger = await screen.findByRole("button", { name: `Actions for ${title}` });
+/** Opens a menu from its trigger with the keyboard, as Radix expects in jsdom. */
+export async function openMenu(trigger: HTMLElement) {
   trigger.focus();
   fireEvent.keyDown(trigger, { key: "Enter" });
   return screen.findByRole("menu");

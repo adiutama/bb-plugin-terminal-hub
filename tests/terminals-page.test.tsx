@@ -2,8 +2,8 @@
 import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { toast } from "sonner";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { notFound, terminal, thread, world } from "./fixtures/fake-bb";
-import { loadApp, mountPage, openRowMenu, stopFollowing } from "./fixtures/page";
+import { type FakeEnvironment, terminal, thread, type World, world } from "./fixtures/fake-bb";
+import { loadApp, mountPage, openMenu, stopFollowing } from "./fixtures/page";
 
 // The real view loads Ghostty's WASM; the page tests only need to know
 // which terminal it was asked to show, and when (the view has its own tests).
@@ -38,7 +38,7 @@ vi.mock("@/components/terminal-view", async () => {
     }) => {
       view.onExit = onExit ?? null;
       useEffect(() => {
-        mounts.push(`mount ${terminalId}`);
+        mounts.push(`mount ${terminalId}${fresh ? " fresh" : ""}`);
         return () => {
           mounts.push(`unmount ${terminalId}`);
         };
@@ -77,47 +77,73 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  mounts.splice(0);
   stopFollowing();
   cleanup();
+  mounts.splice(0);
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 
-const twoEnvironments = () =>
-  world({
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function environment(
+  id: string,
+  projectId: string,
+  overrides: Partial<FakeEnvironment> = {},
+): FakeEnvironment {
+  return {
+    id,
+    projectId,
+    name: null,
+    branchName: id,
+    path: `/Users/me/${id}`,
+    hostId: "host_1",
+    status: "ready",
+    ...overrides,
+  };
+}
+
+/**
+ * Two projects: "Project one" with `main` (env_a) and `bb/feature-x`
+ * (env_b), and "Project two" with `trunk` (env_c).
+ */
+function twoProjects(overrides: Partial<World> = {}): World {
+  return world({
+    projects: [
+      { id: "proj_1", name: "Project one" },
+      { id: "proj_2", name: "Project two" },
+    ],
     environments: [
       ...world().environments,
-      {
-        id: "env_b",
-        projectId: "proj_1",
-        name: "feature",
-        branchName: "feature",
-        path: "/Users/me/wt",
-        hostId: "host_1",
-        status: "ready",
-      },
+      environment("env_b", "proj_1", { name: "bb/feature-x", path: "/Users/me/wt/feature-x" }),
+      environment("env_c", "proj_2", { name: null, branchName: "trunk", path: "/Users/me/two" }),
     ],
+    ...overrides,
   });
+}
 
-/** `count` environments, `env_0` … named `wt-0` …, after env_a ("main"). */
-const manyEnvironments = (count: number) =>
-  world({
-    environments: [
-      ...world().environments,
-      ...Array.from({ length: count }, (_, i) => ({
-        id: `env_${i}`,
-        projectId: "proj_1",
-        name: `wt-${i}`,
-        branchName: null,
-        path: `/Users/me/wt-${i}`,
-        hostId: "host_1",
-        status: "ready",
-      })),
-    ],
-  });
+const rail = () => within(screen.getByRole("navigation", { name: "Environments" }));
+const findField = () => screen.getByRole<HTMLInputElement>("textbox", { name: "Find environment" });
+/** An environment's button in the rail, if shown. */
+const railItem = (environmentId: string) =>
+  document.querySelector<HTMLElement>(`[data-environment-id="${environmentId}"]`);
+const railItems = () =>
+  Array.from(document.querySelectorAll<HTMLElement>("[data-rail-item]")).map(
+    (item) => item.dataset.environmentId,
+  );
+const projectHeader = (name: string) => rail().getByRole("button", { name });
+const tabs = () => within(screen.getByRole("tablist", { name: "Terminals" }));
+const tabNames = () =>
+  tabs()
+    .queryAllByRole("tab")
+    .map((tab) => tab.textContent);
+const bar = () => within(screen.getByRole("region", { name: "Terminal" }));
 
-/** The left column: the pickers, the list, and its summary. */
-const sidebar = () => within(screen.getByRole("complementary", { name: "Terminal list" }));
+/** Leaves the page long enough to count as leaving it. */
+async function away(page: { leave(): void }) {
+  page.leave();
+  await sleep(20);
+}
 
 /** Holds a promise open until `release` is called. */
 function gate() {
@@ -126,6 +152,19 @@ function gate() {
     release = resolve;
   });
   return { promise, release };
+}
+
+/** Holds every call of `method` until the returned function is called. */
+function hold<A extends unknown[], R>(method: {
+  getMockImplementation(): ((...args: A) => R) | undefined;
+  mockImplementation(fn: (...args: A) => R): unknown;
+}) {
+  const real = method.getMockImplementation();
+  const { promise, release } = gate();
+  method.mockImplementation(((...args: A) => promise.then(() => real?.(...args))) as unknown as (
+    ...args: A
+  ) => R);
+  return release;
 }
 
 describe("navigation", () => {
@@ -137,1267 +176,490 @@ describe("navigation", () => {
       title: "Terminals",
       path: "terminals",
     });
-    expect(app.navPanels[0]?.headerContent).toBeTypeOf("function");
   });
 
-  it("NAV-4: without a project in the URL, selects the current project", async () => {
-    const page = await mountPage(world(), "", { projectId: "proj_1" });
-    await waitFor(() => expect(page.subPath()).toBe("proj_1/all"));
-    expect(page.navigations()[0]).toEqual({ subPath: "proj_1/all", replace: true });
+  it("NAV-4, NAV-8: without an environment in the URL, selects the environment of the thread bb was showing and its first tab, replacing the entry", async () => {
+    const w = twoProjects({
+      threads: [thread({ id: "thr_here", environmentId: "env_b" })],
+      terminals: [
+        terminal({ id: "a1" }),
+        terminal({ id: "b1", environmentId: "env_b", createdAt: 1 }),
+        terminal({ id: "b2", environmentId: "env_b", createdAt: 2 }),
+      ],
+    });
+    const page = await mountPage(w, "", { projectId: "proj_1", threadId: "thr_here" });
+    await waitFor(() => expect(page.subPath()).toBe("proj_1/env_b/b1"));
+    expect(page.navigations().at(-1)).toEqual({ subPath: "proj_1/env_b/b1", replace: true });
   });
 
-  it("NAV-4: without a project in the URL or context, selects the first project", async () => {
-    const w = world({
-      projects: [
-        { id: "proj_first", name: "First" },
-        { id: "proj_1", name: "Second" },
+  it("NAV-4: the thread's environment is passed over when the rail does not list it; the environment last shown comes next", async () => {
+    const w = twoProjects({
+      threads: [thread({ id: "thr_here", environmentId: "env_a" })],
+      terminals: [
+        terminal({ id: "b1", environmentId: "env_b" }),
+        terminal({ id: "c1", environmentId: "env_c" }),
+      ],
+    });
+    const page = await mountPage(w, "proj_2/env_c/c1", {
+      projectId: "proj_1",
+      threadId: "thr_here",
+    });
+    await screen.findByTestId("terminal-view");
+    page.goTo("");
+    await waitFor(() => expect(page.subPath()).toBe("proj_2/env_c/c1"));
+  });
+
+  it("NAV-4: otherwise selects the first environment the rail lists, in bb's project order", async () => {
+    const w = twoProjects({
+      terminals: [
+        terminal({ id: "c1", environmentId: "env_c" }),
+        terminal({ id: "b1", environmentId: "env_b" }),
       ],
     });
     const page = await mountPage(w, "", { projectId: null });
-    await waitFor(() => expect(page.subPath()).toBe("proj_first/all"));
+    await waitFor(() => expect(page.subPath()).toBe("proj_1/env_b/b1"));
   });
 
-  it("NAV-7: without an environment in the URL, selects All environments and writes all", async () => {
-    const page = await mountPage(twoEnvironments(), "proj_1");
-    await waitFor(() => expect(page.subPath()).toBe("proj_1/all"));
-    expect(page.navigations()[0]?.replace).toBe(true);
-    expect(await screen.findByRole("combobox", { name: "Environment" })).toHaveTextContent(
-      "All environments",
-    );
-    expect(
-      await screen.findByText("No terminals found. Start one with New terminal in…"),
-    ).toBeTruthy();
+  it("NAV-4: waits until the rail is listed rather than choosing", async () => {
+    const w = twoProjects({ terminals: [terminal({ id: "c1", environmentId: "env_c" })] });
+    // Hold the threads: until Project one is listed, it might list something first.
+    let release: () => void = () => {};
+    const page = await mountPage(w, "", { projectId: null }, (sdk) => {
+      release = hold(sdk.threads.list);
+    });
+    await sleep(50);
+    expect(page.subPath()).toBe("");
+    release();
+    await waitFor(() => expect(page.subPath()).toBe("proj_2/env_c/c1"));
   });
 
   it("NAV-2: restores project, environment, and terminal from the URL", async () => {
-    const w = twoEnvironments();
-    w.terminals.push(terminal({ id: "term_b", title: "api", environmentId: "env_b" }));
-    await mountPage(w, "proj_1/env_b/term_b");
-    expect(await screen.findByTestId("terminal-view")).toHaveTextContent("term_b");
-    expect(screen.getByRole("combobox", { name: "Environment" })).toHaveTextContent("feature");
-    expect(screen.getByRole("combobox", { name: "Project" })).toHaveTextContent("Project one");
-    const row = (await sidebar().findByText("api")).closest("li");
-    expect(row && within(row).getAllByRole("button")[0]).toHaveAttribute("aria-current", "true");
-  });
-
-  it("NAV-3: selecting a terminal adds a history entry", async () => {
-    const w = world({
-      terminals: [terminal({ id: "t1", title: "one" }), terminal({ id: "t2", title: "two" })],
+    const w = twoProjects({
+      terminals: [
+        terminal({ id: "b1", environmentId: "env_b" }),
+        terminal({ id: "b2", environmentId: "env_b" }),
+      ],
     });
-    const page = await mountPage(w, "proj_1/env_a/t1");
-    fireEvent.click(await screen.findByText("two"));
-    await waitFor(() => expect(page.subPath()).toBe("proj_1/env_a/t2"));
-    expect(page.navigations().at(-1)).toEqual({ subPath: "proj_1/env_a/t2", replace: false });
+    await mountPage(w, "proj_1/env_b/b2");
+    expect((await screen.findByTestId("terminal-view")).textContent).toBe("b2");
+    expect(railItem("env_b")).toHaveAttribute("aria-current", "true");
+    expect(tabs().getByRole("tab", { selected: true })).toHaveTextContent("b2");
   });
 
-  it("NAV-8: changing the environment replaces the history entry", async () => {
-    const w = twoEnvironments();
-    w.terminals.push(terminal({ id: "tb", environmentId: "env_b" }));
-    const page = await mountPage(w, "proj_1/all");
-    fireEvent.click(await screen.findByRole("button", { name: /^feature/ }));
-    await waitFor(() => expect(page.subPath()).toBe("proj_1/env_b"));
-    expect(page.navigations().at(-1)).toEqual({ subPath: "proj_1/env_b", replace: true });
+  it("NAV-3: choosing a tab or an environment adds a history entry", async () => {
+    const w = twoProjects({
+      terminals: [
+        terminal({ id: "a1" }),
+        terminal({ id: "a2" }),
+        terminal({ id: "c1", environmentId: "env_c" }),
+      ],
+    });
+    const page = await mountPage(w, "proj_1/env_a/a1");
+    await screen.findByTestId("terminal-view");
+    fireEvent.click(tabs().getByRole("tab", { name: "a2" }));
+    await waitFor(() => expect(page.subPath()).toBe("proj_1/env_a/a2"));
+    expect(page.navigations().at(-1)).toEqual({ subPath: "proj_1/env_a/a2", replace: false });
+    fireEvent.click(railItem("env_c") as HTMLElement);
+    await waitFor(() => expect(page.subPath()).toBe("proj_2/env_c/c1"));
+    expect(page.navigations().at(-1)).toEqual({ subPath: "proj_2/env_c/c1", replace: false });
   });
 
   it("NAV-5: a link to a terminal that no longer exists opens its environment with a notice", async () => {
-    const w = world({ terminals: [terminal({ id: "t1", title: "one" })] });
-    const page = await mountPage(w, "proj_1/env_a/term_gone");
-    expect(await screen.findByText(/That terminal is gone/)).toBeTruthy();
-    await waitFor(() => expect(page.subPath()).toBe("proj_1/env_a"));
-    expect(page.navigations().at(-1)?.replace).toBe(true);
-    expect(screen.getByText("one")).toBeTruthy();
+    const w = world({ terminals: [terminal({ id: "a1" })] });
+    const page = await mountPage(w, "proj_1/env_a/t_dead");
+    expect(await screen.findByText(/That terminal is gone/)).toBeInTheDocument();
+    await waitFor(() => expect(page.subPath()).toBe("proj_1/env_a/a1"));
+    expect(page.navigations().every((n) => n.replace)).toBe(true);
   });
 
   it("NAV-5: a link to an exited terminal says it is gone, with its exit code", async () => {
-    const w = world({ terminals: [terminal({ id: "t_done", status: "exited", exitCode: 2 })] });
-    await mountPage(w, "proj_1/env_a/t_done");
-    expect(await screen.findByText(/exited with code 2/)).toBeTruthy();
+    const w = world({ terminals: [terminal({ id: "t1", status: "exited", exitCode: 4 })] });
+    await mountPage(w, "proj_1/env_a/t1");
+    expect(await screen.findByText(/it exited with code 4/)).toBeInTheDocument();
   });
 
-  it("LIST-28, LIST-11: going back to a terminal that exited after a project switch keeps its exited row", async () => {
-    const w = world({
-      projects: [
-        { id: "proj_1", name: "Project one" },
-        { id: "proj_2", name: "Project two" },
-      ],
-      terminals: [terminal({ id: "t1", title: "one" }), terminal({ id: "t2", title: "two" })],
-    });
-    const page = await mountPage(w, "proj_1/env_a/t1");
-    await screen.findByText("two");
-    page.goTo("proj_2/all");
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    const session = w.terminals[0];
-    if (!session) throw new Error("fixture");
-    session.status = "exited";
-    session.exitCode = 0;
-    page.goTo("proj_1/env_a/t1");
-    expect(await sidebar().findByText("exit 0")).toBeInTheDocument();
-    expect(page.subPath()).toBe("proj_1/env_a/t1");
-    expect(screen.queryByText(/That terminal is gone/)).toBeNull();
-  });
-
-  it("NAV-5: a terminal that cannot be reached keeps the link and offers a retry", async () => {
-    const w = world();
-    const page = await mountPage(w, "proj_1/env_a/term_remote");
-    page.sdk.terminals.get.mockRejectedValueOnce(new Error("machine offline"));
-    expect(await screen.findByText(/Could not reach this terminal: machine offline/)).toBeTruthy();
-    expect(page.subPath()).toBe("proj_1/env_a/term_remote");
-    page.sdk.terminals.get.mockRejectedValueOnce(notFound());
-    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
-    expect(await screen.findByText(/That terminal is gone/)).toBeTruthy();
-  });
-
-  it("NAV-6: the title bar shows the running count for the environment, or the project with All", async () => {
-    const w = twoEnvironments();
-    w.terminals.push(
-      terminal({ id: "a1" }),
-      terminal({ id: "a2" }),
-      terminal({ id: "b1", environmentId: "env_b" }),
-    );
-    const page = await mountPage(w, "proj_1/env_a");
-    expect(await within(page.titleBar()).findByText("2 running")).toBeTruthy();
-    page.goTo("proj_1/all");
-    expect(await within(page.titleBar()).findByText("3 running")).toBeTruthy();
-  });
-});
-
-describe("terminal view on the page", () => {
-  it("VIEW-7, LIST-11: a selected terminal that exits stays selected and mounted, even when bb answers slowly", async () => {
-    const w = world({
-      threads: [thread({ id: "thr_1" })],
-      terminals: [terminal({ id: "term_1", title: "dev", threadId: "thr_1" })],
-    });
-    const page = await mountPage(w, "proj_1/env_a/term_1");
-    await screen.findByTestId("terminal-view");
-    const real = page.sdk.terminals.get.getMockImplementation();
-    page.sdk.terminals.get.mockImplementation(async (args) => {
-      await new Promise((resolve) => setTimeout(resolve, 150));
-      return real?.(args) as never;
-    });
-    const session = w.terminals[0];
-    if (!session) throw new Error("fixture");
-    session.status = "exited";
-    session.exitCode = 3;
-    page.emitThreadChanged({ id: "thr_1", changes: ["terminals-changed"] });
-    expect(await sidebar().findByText("exit 3")).toBeInTheDocument();
-    await new Promise((resolve) => setTimeout(resolve, 300));
-    expect(page.subPath()).toBe("proj_1/env_a/term_1");
-    expect(screen.queryByText(/That terminal is gone/)).toBeNull();
-    expect(mounts).toEqual(["mount term_1"]);
-  });
-
-  it("VIEW-5: answers a new shell's startup queries on its first view only", async () => {
-    const w = world({ terminals: [terminal({ id: "t_old", title: "old" })] });
-    const page = await mountPage(w, "proj_1/env_a");
-    fireEvent.click(await screen.findByRole("button", { name: "New terminal" }));
-    expect(await screen.findByTestId("terminal-view")).toHaveAttribute("data-fresh");
-    fireEvent.click(await screen.findByText("old"));
-    await waitFor(() => expect(page.subPath()).toBe("proj_1/env_a/t_old"));
-    fireEvent.click(await screen.findByText("zsh"));
-    await waitFor(() => expect(page.subPath()).toBe("proj_1/env_a/term_new_1"));
-    expect(await screen.findByTestId("terminal-view")).not.toHaveAttribute("data-fresh");
-  });
-
-  it("NAV-5: resolves a dead link even when one environment cannot be listed", async () => {
-    const w = twoEnvironments();
-    const page = await mountPage(w, "proj_1/all/term_gone");
-    const real = page.sdk.terminals.list.getMockImplementation();
-    page.sdk.terminals.list.mockImplementation(async (args) => {
-      if (args.scope.kind === "environment" && args.scope.environmentId === "env_b") {
-        throw new Error("host offline");
-      }
-      return real?.(args) as never;
-    });
+  it("NAV-5: a link to a terminal in an environment the rail does not list opens as NAV-4 says", async () => {
+    const w = twoProjects({ terminals: [terminal({ id: "c1", environmentId: "env_c" })] });
+    const page = await mountPage(w, "proj_1/env_b/t_dead");
     expect(await screen.findByText(/That terminal is gone/)).toBeInTheDocument();
+    await waitFor(() => expect(page.subPath()).toBe("proj_2/env_c/c1"));
+  });
+
+  it("NAV-5, LIST-25: a terminal that cannot be reached keeps the link and offers a retry", async () => {
+    const w = world();
+    const page = await mountPage(w, "proj_1/env_a/t_far", undefined, (sdk) => {
+      sdk.terminals.get.mockRejectedValueOnce(new Error("host offline"));
+    });
     expect(
-      await screen.findByText("Could not list this environment's terminals: host offline"),
+      await screen.findByText(/Could not reach this terminal: host offline/),
     ).toBeInTheDocument();
+    expect(page.subPath()).toBe("proj_1/env_a/t_far");
+    w.terminals.push(terminal({ id: "t_far", threadId: "thr_elsewhere" }));
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(await screen.findByTestId("terminal-view")).toHaveTextContent("t_far");
+  });
+
+  it("NAV-6: the title bar shows project / environment and its running count", async () => {
+    const w = twoProjects({
+      terminals: [
+        terminal({ id: "b1", environmentId: "env_b" }),
+        terminal({ id: "b2", environmentId: "env_b", status: "exited", exitCode: 0 }),
+        terminal({ id: "b3", environmentId: "env_b" }),
+        terminal({ id: "c1", environmentId: "env_c" }),
+      ],
+    });
+    const page = await mountPage(w, "proj_1/env_b/b1");
+    await screen.findByTestId("terminal-view");
+    await waitFor(() => expect(page.titleBar()).toHaveTextContent("Project one / bb/feature-x"));
+    expect(page.titleBar()).toHaveTextContent(/2 running$/);
+  });
+
+  it("NAV-9, LIST-43: the find text is not in the URL and adds no history entry", async () => {
+    const w = twoProjects({ terminals: [terminal({ id: "a1" })] });
+    const page = await mountPage(w, "proj_1/env_a/a1");
+    await screen.findByTestId("terminal-view");
+    const before = page.navigations().length;
+    fireEvent.change(findField(), { target: { value: "main" } });
+    await sleep(30);
+    expect(page.navigations()).toHaveLength(before);
+    expect(page.subPath()).toBe("proj_1/env_a/a1");
   });
 });
 
-describe("session list", () => {
-  it("LIST-9: New terminal starts a shell at environment scope and selects it", async () => {
-    const page = await mountPage(world(), "proj_1/env_a");
-    fireEvent.click(await screen.findByRole("button", { name: "New terminal" }));
-    await waitFor(() => expect(page.subPath()).toBe("proj_1/env_a/term_new_1"));
+describe("rail", () => {
+  it("LIST-33, LIST-1, LIST-8: lists every project in bb's order with its environments that have terminals, thread terminals included", async () => {
+    const w = twoProjects({
+      environments: [
+        ...twoProjects().environments,
+        environment("env_empty", "proj_1", { name: "idle-tree" }),
+      ],
+      threads: [
+        thread({ id: "thr_old", environmentId: "env_c", projectId: "proj_2", archivedAt: 5 }),
+      ],
+      terminals: [
+        terminal({ id: "b1", environmentId: "env_b" }),
+        terminal({ id: "a1" }),
+        terminal({ id: "c1", environmentId: "env_c", threadId: "thr_old" }),
+      ],
+    });
+    const page = await mountPage(w, "proj_1/env_a/a1");
+    await waitFor(() => expect(railItems()).toEqual(["env_a", "env_b", "env_c"]));
+    expect(
+      rail()
+        .getAllByRole("button", { expanded: true })
+        .map((b) => b.textContent),
+    ).toEqual(["Project one", "Project two"]);
+    expect(rail().queryByText("idle-tree")).toBeNull();
+    // Every project is listed in full while the page is shown.
+    const scanned = page.sdk.threads.list.mock.calls
+      .map(([args]) => args.projectId)
+      .filter(Boolean);
+    expect(new Set(scanned)).toEqual(new Set(["proj_1", "proj_2"]));
+  });
+
+  it("LIST-33: a project with no environment listed is left out", async () => {
+    const w = twoProjects({ terminals: [terminal({ id: "c1", environmentId: "env_c" })] });
+    await mountPage(w, "proj_2/env_c/c1");
+    await waitFor(() => expect(railItems()).toEqual(["env_c"]));
+    expect(rail().queryByRole("button", { name: "Project one" })).toBeNull();
+  });
+
+  it("LIST-34: shows each environment's name as bb gives it, truncated with the full name on hover, and its running count unless zero", async () => {
+    const w = twoProjects({
+      environments: [
+        ...twoProjects().environments,
+        environment("env_path", "proj_2", {
+          name: null,
+          branchName: null,
+          path: "/Users/me/checkouts/scratch",
+        }),
+      ],
+      threads: [thread({ id: "thr_b", environmentId: "env_b" })],
+      terminals: [
+        terminal({ id: "a1" }),
+        terminal({ id: "a2" }),
+        terminal({ id: "b1", environmentId: "env_b", threadId: "thr_b" }),
+        terminal({ id: "c1", environmentId: "env_c" }),
+        terminal({ id: "p1", environmentId: "env_path" }),
+      ],
+    });
+    const page = await mountPage(w, "proj_1/env_a/a1");
+    await waitFor(() => expect(railItems()).toHaveLength(4));
+    expect(railItem("env_a")).toHaveTextContent(/^main2$/);
+    expect(railItem("env_b")).toHaveTextContent(/^bb\/feature-x1$/);
+    expect(railItem("env_c")).toHaveTextContent(/^trunk1$/);
+    expect(railItem("env_path")).toHaveTextContent(/^scratch1$/);
+    const b = railItem("env_b") as HTMLElement;
+    expect(b).toHaveAttribute("title", "bb/feature-x");
+    expect(within(b).getByText("bb/feature-x")).toHaveClass("truncate");
+
+    // Its only terminal ended: still listed, with no count.
+    const ended = w.terminals.find((t) => t.id === "b1");
+    if (!ended) throw new Error("fixture");
+    ended.status = "exited";
+    ended.exitCode = 1;
+    page.emitThreadChanged({ id: "thr_b", changes: ["terminals-changed"] });
+    await waitFor(() => expect(railItem("env_b")).toHaveTextContent(/^bb\/feature-x$/));
+  });
+
+  it("LIST-35: clicking a project header folds and unfolds it without changing the selection; folded projects are remembered", async () => {
+    const w = twoProjects({
+      terminals: [
+        terminal({ id: "a1" }),
+        terminal({ id: "b1", environmentId: "env_b" }),
+        terminal({ id: "c1", environmentId: "env_c" }),
+      ],
+    });
+    const page = await mountPage(w, "proj_1/env_a/a1");
+    await waitFor(() => expect(railItems()).toHaveLength(3));
+    fireEvent.click(projectHeader("Project two"));
+    expect(railItems()).toEqual(["env_a", "env_b"]);
+    expect(projectHeader("Project two")).toHaveAttribute("aria-expanded", "false");
+    // A folded project still shows the selected environment.
+    fireEvent.click(projectHeader("Project one"));
+    expect(railItems()).toEqual(["env_a"]);
+    expect(page.subPath()).toBe("proj_1/env_a/a1");
+    await away(page);
+    page.returnTo("proj_1/env_a/a1");
+    await waitFor(() => expect(railItems()).toEqual(["env_a"]));
+    fireEvent.click(projectHeader("Project two"));
+    expect(railItems()).toEqual(["env_a", "env_c"]);
+  });
+
+  it("LIST-36: clicking an environment selects it with the tab it last showed, else its first; the rail marks it", async () => {
+    const w = twoProjects({
+      terminals: [
+        terminal({ id: "a1" }),
+        terminal({ id: "c1", environmentId: "env_c" }),
+        terminal({ id: "c2", environmentId: "env_c" }),
+      ],
+    });
+    const page = await mountPage(w, "proj_1/env_a/a1");
+    await waitFor(() => expect(railItems()).toHaveLength(2));
+    fireEvent.click(railItem("env_c") as HTMLElement);
+    await waitFor(() => expect(page.subPath()).toBe("proj_2/env_c/c1"));
+    expect(railItem("env_c")).toHaveAttribute("aria-current", "true");
+    expect(railItem("env_a")).not.toHaveAttribute("aria-current");
+    fireEvent.click(tabs().getByRole("tab", { name: "c2" }));
+    await waitFor(() => expect(page.subPath()).toBe("proj_2/env_c/c2"));
+    fireEvent.click(railItem("env_a") as HTMLElement);
+    await waitFor(() => expect(page.subPath()).toBe("proj_1/env_a/a1"));
+    fireEvent.click(railItem("env_c") as HTMLElement);
+    await waitFor(() => expect(page.subPath()).toBe("proj_2/env_c/c2"));
+  });
+
+  it("LIST-37, ACT-7: when the selected environment's last tab goes, the next environment below is selected, else the one above", async () => {
+    const w = twoProjects({
+      terminals: [
+        terminal({ id: "a1" }),
+        terminal({ id: "b1", environmentId: "env_b" }),
+        terminal({ id: "c1", environmentId: "env_c" }),
+      ],
+    });
+    const page = await mountPage(w, "proj_1/env_b/b1");
+    await screen.findByTestId("terminal-view");
+    const close = async (title: string) => {
+      const menu = await openMenu(bar().getByRole("button", { name: `More actions for ${title}` }));
+      fireEvent.click(within(menu).getByRole("menuitem", { name: "Close" }));
+    };
+    await close("b1");
+    await waitFor(() => expect(page.subPath()).toBe("proj_2/env_c/c1"));
+    expect(railItems()).toEqual(["env_a", "env_c"]);
+    expect(page.navigations().at(-1)?.replace).toBe(true);
+    await screen.findByTestId("terminal-view");
+    await close("c1");
+    await waitFor(() => expect(page.subPath()).toBe("proj_1/env_a/a1"));
+  });
+
+  it("LIST-41, LIST-40: a project header's + opens New terminal in… with every environment, empty ones included, and starts a shell there", async () => {
+    const w = twoProjects({
+      environments: [
+        ...twoProjects().environments,
+        environment("env_empty", "proj_1", { name: "idle-tree" }),
+      ],
+      terminals: [terminal({ id: "a1" })],
+    });
+    const page = await mountPage(w, "proj_1/env_a/a1");
+    await waitFor(() => expect(railItems()).toEqual(["env_a"]));
+    const menu = await openMenu(
+      rail().getByRole("button", { name: "New terminal in Project one…" }),
+    );
+    expect(within(menu).getByText("New terminal in…")).toBeInTheDocument();
+    expect(
+      within(menu)
+        .getAllByRole("menuitem")
+        .map((item) => item.textContent),
+    ).toEqual(["main", "bb/feature-x", "idle-tree"]);
+    fireEvent.click(within(menu).getByRole("menuitem", { name: "idle-tree" }));
+    await waitFor(() => expect(page.subPath()).toBe("proj_1/env_empty/term_new_1"));
     expect(page.sdk.terminals.create).toHaveBeenCalledWith(
       expect.objectContaining({
-        scope: { kind: "environment", environmentId: "env_a" },
+        scope: { kind: "environment", environmentId: "env_empty" },
         start: { mode: "shell" },
       }),
     );
     expect(page.navigations().at(-1)?.replace).toBe(false);
-    expect(await screen.findByTestId("terminal-view")).toHaveAttribute("data-fresh");
+    expect(railItems()).toEqual(["env_a", "env_empty"]);
   });
 
-  it("LIST-9: in All with nothing selected, New terminal opens the menu, and a hidden empty environment can be chosen", async () => {
-    const page = await mountPage(twoEnvironments(), "proj_1/all");
-    await screen.findByText("No terminals found. Start one with New terminal in…");
-    fireEvent.click(sidebar().getByRole("button", { name: "New terminal" }));
-    const menu = await screen.findByRole("menu");
-    expect(
-      within(menu)
-        .getAllByRole("menuitem")
-        .map((item) => item.textContent),
-    ).toEqual(["main", "feature"]);
-    fireEvent.click(within(menu).getByRole("menuitem", { name: "feature" }));
-    await waitFor(() => expect(page.subPath()).toBe("proj_1/all/term_new_1"));
-    expect(page.sdk.terminals.create).toHaveBeenCalledWith(
-      expect.objectContaining({ scope: { kind: "environment", environmentId: "env_b" } }),
+  it("LIST-41: the + shows on hover and focus within the header, and always with a coarse pointer", async () => {
+    await mountPage(world({ terminals: [terminal({ id: "a1" })] }), "proj_1/env_a/a1");
+    const plus = await rail().findByRole("button", { name: "New terminal in Project one…" });
+    expect(plus).toHaveClass(
+      "opacity-0",
+      "group-hover:opacity-100",
+      "group-focus-within:opacity-100",
+      "pointer-coarse:opacity-100",
     );
-    const feature = await screen.findByRole("region", { name: "feature" });
-    expect(within(feature).getByText("zsh")).toBeTruthy();
   });
 
-  it("LIST-9: the menu lists the selected environment first; from one environment, choosing another switches to it", async () => {
-    const page = await mountPage(twoEnvironments(), "proj_1/env_b");
-    const trigger = await screen.findByRole("button", { name: "New terminal in…" });
-    trigger.focus();
-    fireEvent.keyDown(trigger, { key: "Enter" });
-    const menu = await screen.findByRole("menu");
-    expect(
-      within(menu)
-        .getAllByRole("menuitem")
-        .map((item) => item.textContent),
-    ).toEqual(["feature", "main"]);
-    fireEvent.click(within(menu).getByRole("menuitem", { name: "main" }));
-    await waitFor(() => expect(page.subPath()).toBe("proj_1/env_a/term_new_1"));
-    expect(await sidebar().findByText("zsh")).toBeTruthy();
-  });
-
-  it("LIST-10: an environment with no terminals says so; the page says how to start one", async () => {
-    await mountPage(world(), "proj_1/env_a");
-    expect(await screen.findByText("No terminals here yet.")).toBeTruthy();
-    expect(
-      await screen.findByText("No terminals found. Start one with New terminal in…"),
-    ).toBeTruthy();
-    expect(sidebar().getByRole("button", { name: "New terminal in main" })).toBeTruthy();
-  });
-
-  it("LIST-13: All shows environments with terminals as expanded sections, in BB's order, and leaves out the empty ones", async () => {
-    const w = manyEnvironments(3);
-    w.terminals.push(
-      terminal({ id: "a1", title: "dev" }),
-      terminal({ id: "c1", title: "api", environmentId: "env_2" }),
-    );
-    await mountPage(w, "proj_1/all");
-    const main = await screen.findByRole("region", { name: "main" });
-    const toggle = within(main).getByRole("button", { name: "Collapse main" });
-    expect(toggle).toHaveAttribute("aria-expanded", "true");
-    // The name, its running count, and the toggle: separate parts of the header.
-    await waitFor(() => expect(toggle.parentElement).toHaveTextContent(/^main1 running$/));
-    expect(within(main).getByRole("button", { name: "main" })).not.toContainElement(toggle);
-    expect(within(main).getByRole("region", { name: "Environment" })).toBeTruthy();
-    expect(
-      screen
-        .getAllByRole("region")
-        .map((region) => region.getAttribute("aria-label"))
-        .filter((name) => name === "main" || name?.startsWith("wt-")),
-    ).toEqual(["main", "wt-2"]);
-    expect(screen.queryByRole("region", { name: "wt-0" })).toBeNull();
-    expect(screen.queryByRole("button", { name: /empty environment/ })).toBeNull();
-    expect(screen.queryByText(/^wt-[01]$/)).toBeNull();
-
-    // Still reachable from "New terminal in…".
-    const trigger = sidebar().getByRole("button", { name: "New terminal in…" });
-    trigger.focus();
-    fireEvent.keyDown(trigger, { key: "Enter" });
-    const menu = await screen.findByRole("menu");
-    expect(within(menu).getByRole("menuitem", { name: "wt-0" })).toBeTruthy();
-  });
-
-  it("LIST-13, LIST-10: forty empty environments list nothing, and the page says nothing is running", async () => {
-    await mountPage(manyEnvironments(39), "proj_1/all");
-    expect(
-      await screen.findByText("No terminals found. Start one with New terminal in…"),
-    ).toBeTruthy();
-    expect(screen.queryByRole("button", { name: /^Collapse|^Expand/ })).toBeNull();
-    expect(screen.queryByRole("button", { name: /empty environment/ })).toBeNull();
-    expect(sidebar().queryByText(/^wt-/)).toBeNull();
-  });
-
-  it("LIST-13, LIST-11: an environment whose last terminal exits keeps its section and shows the exit code", async () => {
-    const w = twoEnvironments();
-    w.threads.push(thread({ id: "thr_b", environmentId: "env_b" }));
-    w.terminals.push(
-      terminal({ id: "b1", title: "build", threadId: "thr_b", environmentId: "env_b" }),
-    );
-    const page = await mountPage(w, "proj_1/all");
-    const feature = await screen.findByRole("region", { name: "feature" });
-    await within(feature).findByText("build");
-    const session = w.terminals[0];
-    if (!session) throw new Error("fixture");
-    session.status = "exited";
-    session.exitCode = 3;
-    page.emitThreadChanged({ id: "thr_b", changes: ["terminals-changed"] });
-    expect(await within(feature).findByText("exit 3")).toBeInTheDocument();
-    expect(
-      within(feature).getByRole("button", { name: "Collapse feature" }).parentElement,
-    ).toHaveTextContent("0 running");
-    expect(screen.queryByRole("region", { name: "main" })).toBeNull();
-  });
-
-  it("LIST-17: while the first scan is slow, the list shows its progress and never says nothing is there", async () => {
-    const w = world({ threads: [thread({ id: "thr_1" }), thread({ id: "thr_2" })] });
-    const page = await mountPage(w, "proj_1/all");
-    const slow = gate();
-    const real = page.sdk.terminals.list.getMockImplementation();
-    page.sdk.terminals.list.mockImplementation(async (args) => {
-      if (args.scope.kind === "thread" && args.scope.threadId === "thr_2") await slow.promise;
-      return real?.(args) as never;
-    });
-    expect(await screen.findByText("Scanning threads… 1 of 2")).toBeTruthy();
-    expect(screen.queryByText(/No terminals found/)).toBeNull();
-    slow.release();
-    expect(
-      await screen.findByText("No terminals found. Start one with New terminal in…"),
-    ).toBeTruthy();
-    expect(screen.queryByText(/Scanning threads/)).toBeNull();
-  });
-
-  it("LIST-17: a failed first scan shows the error, not an empty list", async () => {
-    const page = await mountPage(twoEnvironments(), "proj_1/all");
-    page.sdk.threads.list.mockRejectedValue(new Error("bb is restarting"));
-    expect(await screen.findByText("bb is restarting")).toBeTruthy();
-    expect(screen.queryByText(/No terminals found/)).toBeNull();
-    expect(screen.getByText(/Could not list every terminal yet/)).toBeTruthy();
-  });
-
-  it("LIST-16, ACT-5: the summary counts running terminals and servers; Clean up N stale opens the cleanup", async () => {
-    const w = world({
-      threads: [thread({ id: "thr_idle", title: "Release prep", status: "idle" })],
-      terminals: [
-        terminal({ id: "web", title: "dev server" }),
-        terminal({ id: "sh", title: "zsh" }),
-        terminal({ id: "left", title: "pnpm test", threadId: "thr_idle" }),
-      ],
-      output: { web: "  ➜  Local:   http://localhost:5173/\r\n" },
-    });
-    await mountPage(w, "proj_1/all");
-    const summary = await screen.findByRole("region", { name: "Summary" });
-    await waitFor(() => expect(summary).toHaveTextContent("3 running·1 serverClean up 1 stale"));
-    fireEvent.click(within(summary).getByRole("button", { name: "Clean up 1 stale" }));
-    const dialog = await screen.findByRole("dialog");
-    expect(dialog).toHaveTextContent("Close all from settled threads?");
-    expect(dialog).toHaveTextContent("pnpm test");
-  });
-
-  it("LIST-16: leaves out zero servers and stale terminals", async () => {
-    await mountPage(world({ terminals: [terminal({ id: "sh" })] }), "proj_1/env_a");
-    const summary = await screen.findByRole("region", { name: "Summary" });
-    await waitFor(() => expect(summary).toHaveTextContent(/^1 running$/));
-    expect(within(summary).queryByRole("button")).toBeNull();
-  });
-
-  it("LIST-15: clicking an environment's section header selects that environment", async () => {
-    const w = twoEnvironments();
-    w.terminals.push(terminal({ id: "a1" }));
-    const page = await mountPage(w, "proj_1/all");
-    fireEvent.click(await screen.findByRole("button", { name: "main" }));
-    await waitFor(() => expect(page.subPath()).toBe("proj_1/env_a"));
-  });
-
-  it("LIST-2, LIST-3: shows headed groups when both kinds are there, and the owning thread's title and state on thread rows", async () => {
-    const w = world({
-      threads: [thread({ id: "thr_1", title: "Fix flaky tests", status: "idle" })],
-      terminals: [
-        terminal({ id: "env_t", title: "dev server" }),
-        terminal({ id: "thr_t", title: "pnpm test", threadId: "thr_1" }),
-      ],
-    });
-    await mountPage(w, "proj_1/env_a");
-    const environment = await screen.findByRole("region", { name: "Environment" });
-    const fromThreads = await screen.findByRole("region", { name: "From threads" });
-    expect(within(environment).getByText("dev server")).toBeTruthy();
-    expect(within(fromThreads).getByText("pnpm test")).toBeTruthy();
-    expect(within(environment).getByRole("heading", { name: "Environment" })).toBeTruthy();
-    expect(within(fromThreads).getByRole("heading", { name: "From threads" })).toBeTruthy();
-    const line = within(fromThreads).getByText("Fix flaky tests").parentElement;
-    expect(line).toHaveTextContent("Fix flaky tests· idle");
-  });
-
-  it("LIST-2: leaves out the heading when only one kind is shown, also after filtering", async () => {
-    const w = world({
-      threads: [thread({ id: "thr_1", title: "Fix flaky tests", status: "active" })],
-      terminals: [
-        terminal({ id: "env_t", title: "dev server" }),
-        terminal({ id: "thr_t", title: "pnpm test", threadId: "thr_1" }),
-      ],
-    });
-    await mountPage(w, "proj_1/env_a");
-    await sidebar().findByRole("heading", { name: "From threads" });
-    fireEvent.change(sidebar().getByRole("textbox", { name: "Filter terminals" }), {
-      target: { value: "pnpm" },
-    });
-    const fromThreads = await screen.findByRole("region", { name: "From threads" });
-    await waitFor(() => expect(within(fromThreads).queryByRole("heading")).toBeNull());
-    expect(within(fromThreads).getByText("pnpm test")).toBeTruthy();
-    expect(screen.queryByRole("region", { name: "Environment" })).toBeNull();
-  });
-});
-
-describe("actions", () => {
-  const withThread = () =>
-    world({
+  it("LIST-42: Find environment narrows the rail to environments matching every word: name, project, title, port, or thread", async () => {
+    const w = twoProjects({
       threads: [
-        thread({ id: "thr_idle", title: "Release prep", status: "idle" }),
-        thread({ id: "thr_arch", title: "Old work", archivedAt: 50 }),
-        thread({ id: "thr_live", title: "Busy", status: "active" }),
+        thread({
+          id: "thr_flaky",
+          title: "Fix flaky tests",
+          environmentId: "env_c",
+          projectId: "proj_2",
+        }),
       ],
       terminals: [
-        terminal({ id: "env_t", title: "dev server" }),
-        terminal({ id: "idle_t", title: "pnpm test", threadId: "thr_idle" }),
-        terminal({ id: "arch_t", title: "watch", threadId: "thr_arch" }),
-        terminal({ id: "live_t", title: "build", threadId: "thr_live" }),
+        terminal({ id: "a1", title: "vite" }),
+        terminal({ id: "b1", environmentId: "env_b", title: "api" }),
+        terminal({ id: "c1", environmentId: "env_c", threadId: "thr_flaky", title: "pnpm test" }),
       ],
+      output: { a1: "  ➜  Local:   http://localhost:5173/\r\n" },
     });
-
-  it("ACT-1: each row's menu offers Rename, Restart shell, and Close", async () => {
-    await mountPage(withThread(), "proj_1/env_a");
-    const menu = await openRowMenu("dev server");
-    expect(
-      within(menu)
-        .getAllByRole("menuitem")
-        .map((item) => item.textContent),
-    ).toEqual(["Rename", "Restart shell", "Close"]);
+    const page = await mountPage(w, "proj_1/env_b/b1");
+    await waitFor(() => expect(railItems()).toHaveLength(3));
+    const find = (text: string) => fireEvent.change(findField(), { target: { value: text } });
+    find("5173");
+    await waitFor(() => expect(railItems()).toEqual(["env_a"]));
+    find("two FLAKY");
+    expect(railItems()).toEqual(["env_c"]);
+    expect(rail().queryByRole("button", { name: "Project one" })).toBeNull();
+    find("feature api");
+    expect(railItems()).toEqual(["env_b"]);
+    find("   ");
+    expect(railItems()).toHaveLength(3);
+    // The selected environment stays selected, its tabs shown, while hidden.
+    find("trunk");
+    expect(railItems()).toEqual(["env_c"]);
+    expect(page.subPath()).toBe("proj_1/env_b/b1");
+    expect(tabNames()).toEqual(["api"]);
   });
 
-  it("ACT-2: Rename sets the title through the SDK", async () => {
-    const page = await mountPage(withThread(), "proj_1/env_a");
-    const menu = await openRowMenu("dev server");
-    fireEvent.click(within(menu).getByRole("menuitem", { name: "Rename" }));
-    const input = await screen.findByRole("textbox", { name: "Terminal title" });
-    fireEvent.change(input, { target: { value: "web" } });
-    fireEvent.click(screen.getByRole("button", { name: "Rename" }));
-    await waitFor(() =>
-      expect(page.sdk.terminals.rename).toHaveBeenCalledWith({ terminalId: "env_t", title: "web" }),
-    );
-    expect(await screen.findByText("web")).toBeTruthy();
-  });
-
-  it("ACT-3: Restart shell restarts through the SDK", async () => {
-    const page = await mountPage(withThread(), "proj_1/env_a/env_t");
-    const menu = await openRowMenu("dev server");
-    fireEvent.click(within(menu).getByRole("menuitem", { name: "Restart shell" }));
-    await waitFor(() =>
-      expect(page.sdk.terminals.restart).toHaveBeenCalledWith({ terminalId: "env_t" }),
-    );
-  });
-
-  it("ACT-4: an environment terminal closes without asking", async () => {
-    const page = await mountPage(withThread(), "proj_1/env_a");
-    const menu = await openRowMenu("dev server");
-    fireEvent.click(within(menu).getByRole("menuitem", { name: "Close" }));
-    await waitFor(() =>
-      expect(page.sdk.terminals.close).toHaveBeenCalledWith({ terminalId: "env_t", mode: "force" }),
-    );
-    expect(screen.queryByRole("dialog")).toBeNull();
-  });
-
-  it("ACT-4: a thread terminal asks first, naming the terminal and its thread", async () => {
-    const page = await mountPage(withThread(), "proj_1/env_a");
-    const menu = await openRowMenu("pnpm test");
-    fireEvent.click(within(menu).getByRole("menuitem", { name: "Close" }));
-    const dialog = await screen.findByRole("dialog");
-    expect(dialog).toHaveTextContent("pnpm test");
-    expect(dialog).toHaveTextContent("Release prep");
-    expect(page.sdk.terminals.close).not.toHaveBeenCalled();
-    fireEvent.click(within(dialog).getByRole("button", { name: "Close terminal" }));
-    await waitFor(() =>
-      expect(page.sdk.terminals.close).toHaveBeenCalledWith({
-        terminalId: "idle_t",
-        mode: "force",
-      }),
-    );
-  });
-
-  it("ACT-5: closes every running terminal of settled threads after one confirmation listing each", async () => {
-    const page = await mountPage(withThread(), "proj_1/env_a");
-    fireEvent.click(await screen.findByRole("button", { name: "Clean up 2 stale" }));
-    const dialog = await screen.findByRole("dialog");
-    expect(dialog).toHaveTextContent("pnpm test");
-    expect(dialog).toHaveTextContent("Release prep");
-    expect(dialog).toHaveTextContent("watch");
-    expect(dialog).toHaveTextContent("Old work");
-    expect(dialog).not.toHaveTextContent("build");
-    fireEvent.click(within(dialog).getByRole("button", { name: "Close 2" }));
-    await waitFor(() => expect(page.sdk.terminals.close).toHaveBeenCalledTimes(2));
-    expect(page.sdk.terminals.close.mock.calls.map(([args]) => args.terminalId).sort()).toEqual([
-      "arch_t",
-      "idle_t",
-    ]);
-  });
-
-  it("ACT-5: with All selected, cleanup covers the whole project", async () => {
-    const w = twoEnvironments();
-    w.threads.push(thread({ id: "thr_b", environmentId: "env_b" }));
-    w.terminals.push(
-      terminal({ id: "a", threadId: "thr_b", environmentId: "env_b" }),
-      terminal({ id: "b", threadId: "thr_b", environmentId: "env_b" }),
-    );
-    w.threads.push(thread({ id: "thr_a" }));
-    w.terminals.push(terminal({ id: "c", threadId: "thr_a" }));
-    await mountPage(w, "proj_1/all");
-    expect(await screen.findByRole("button", { name: "Clean up 3 stale" })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: /Close all from settled threads/ })).toBeNull();
-  });
-
-  it("ACT-6: a close that leaves the terminal running reports an error and keeps the row", async () => {
-    const page = await mountPage(withThread(), "proj_1/env_a");
-    page.sdk.terminals.close.mockResolvedValueOnce(terminal({ id: "env_t", status: "running" }));
-    const menu = await openRowMenu("dev server");
-    fireEvent.click(within(menu).getByRole("menuitem", { name: "Close" }));
-    await waitFor(() => expect(page.sdk.terminals.close).toHaveBeenCalled());
-    expect(screen.getByText("dev server")).toBeTruthy();
-  });
-
-  it("ACT-7: closing the selected terminal selects the next one, or the empty state", async () => {
-    const w = world({
-      terminals: [terminal({ id: "t1", title: "one" }), terminal({ id: "t2", title: "two" })],
+  it("LIST-42: folded projects unfold while the find text is not empty", async () => {
+    const w = twoProjects({
+      terminals: [terminal({ id: "a1" }), terminal({ id: "c1", environmentId: "env_c" })],
     });
-    const page = await mountPage(w, "proj_1/env_a/t1");
-    let menu = await openRowMenu("one");
-    fireEvent.click(within(menu).getByRole("menuitem", { name: "Close" }));
-    await waitFor(() => expect(page.subPath()).toBe("proj_1/env_a/t2"));
-    menu = await openRowMenu("two");
-    fireEvent.click(within(menu).getByRole("menuitem", { name: "Close" }));
-    await waitFor(() => expect(page.subPath()).toBe("proj_1/env_a"));
-    expect(await screen.findByText(/No terminals found/)).toBeTruthy();
+    await mountPage(w, "proj_1/env_a/a1");
+    await waitFor(() => expect(railItems()).toHaveLength(2));
+    fireEvent.click(projectHeader("Project two"));
+    expect(railItems()).toEqual(["env_a"]);
+    fireEvent.change(findField(), { target: { value: "trunk" } });
+    expect(railItems()).toEqual(["env_c"]);
+    fireEvent.change(findField(), { target: { value: "" } });
+    expect(railItems()).toEqual(["env_a"]);
   });
 
-  it("ACT-7: in All, the next selection skips a collapsed section and never wraps", async () => {
-    const w = manyEnvironments(2);
-    w.terminals.push(
-      terminal({ id: "a1", title: "one" }),
-      terminal({ id: "b1", title: "two", environmentId: "env_0" }),
-      terminal({ id: "c1", title: "three", environmentId: "env_1" }),
-    );
-    const page = await mountPage(w, "proj_1/all/a1");
-    fireEvent.click(await screen.findByRole("button", { name: "Collapse wt-0" }));
-    let menu = await openRowMenu("one");
-    fireEvent.click(within(menu).getByRole("menuitem", { name: "Close" }));
-    await waitFor(() => expect(page.subPath()).toBe("proj_1/all/c1"));
-    menu = await openRowMenu("three");
-    fireEvent.click(within(menu).getByRole("menuitem", { name: "Close" }));
-    await waitFor(() => expect(page.subPath()).toBe("proj_1/all"));
+  it("LIST-43: says when no environment matches, and keeps the text across leaving and returning", async () => {
+    const w = world({ terminals: [terminal({ id: "a1" })] });
+    const page = await mountPage(w, "proj_1/env_a/a1");
+    await waitFor(() => expect(railItems()).toHaveLength(1));
+    fireEvent.change(findField(), { target: { value: "nowhere" } });
+    expect(rail().getByText("No environment matches “nowhere”.")).toBeInTheDocument();
+    await away(page);
+    page.returnTo("proj_1/env_a/a1");
+    expect(findField().value).toBe("nowhere");
   });
 
-  it("ACT-7: dismissing an environment's last row moves to the next environment's terminal", async () => {
-    const w = manyEnvironments(1);
-    w.terminals.push(
-      terminal({ id: "a1", title: "one" }),
-      terminal({ id: "b1", title: "two", environmentId: "env_0" }),
-    );
-    const page = await mountPage(w, "proj_1/all/a1");
+  it("LIST-44: `/` focuses the find field and selects its text, but not from a text field; no Cmd/Ctrl+K", async () => {
+    const w = world({ terminals: [terminal({ id: "a1" })] });
+    await mountPage(w, "proj_1/env_a/a1");
     await screen.findByTestId("terminal-view");
-    const session = w.terminals[0];
-    if (!session) throw new Error("fixture");
-    session.status = "exited";
-    session.exitCode = 0;
-    fireEvent.click(await screen.findByRole("button", { name: "Dismiss one" }, { timeout: 7000 }));
-    await waitFor(() => expect(page.subPath()).toBe("proj_1/all/b1"));
-    expect(screen.queryByRole("region", { name: "main" })).toBeNull();
-  }, 10_000);
-});
+    fireEvent.change(findField(), { target: { value: "ma" } });
+    const tab = tabs().getByRole("tab", { name: "a1" });
+    tab.focus();
+    fireEvent.keyDown(tab, { key: "/" });
+    expect(document.activeElement).toBe(findField());
+    expect(findField().selectionStart).toBe(0);
+    expect(findField().selectionEnd).toBe(2);
+    // Cmd/Ctrl+K is bb's thread switcher: the page leaves it alone.
+    tab.focus();
+    const k = new KeyboardEvent("keydown", {
+      key: "k",
+      metaKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    tab.dispatchEvent(k);
+    expect(k.defaultPrevented).toBe(false);
+    expect(document.activeElement).toBe(tab);
+  });
 
-describe("filter and keyboard", () => {
-  const filterBox = () =>
-    screen.findByRole<HTMLInputElement>("textbox", { name: "Filter terminals" });
-  const type = async (text: string) => {
-    const input = await filterBox();
-    fireEvent.change(input, { target: { value: text } });
-    return input;
-  };
-  /** The main button of the row titled `title`. */
-  const rowButton = async (title: string) => {
-    const button = (await sidebar().findByText(title)).closest("button");
-    if (!button) throw new Error(`no row ${title}`);
-    return button;
-  };
+  it("LIST-44: in the field, Escape clears, then moves to the selected environment; ↓ enters the rail; Enter selects the first shown", async () => {
+    const w = twoProjects({
+      terminals: [terminal({ id: "a1" }), terminal({ id: "c1", environmentId: "env_c" })],
+    });
+    const page = await mountPage(w, "proj_1/env_a/a1");
+    await waitFor(() => expect(railItems()).toHaveLength(2));
+    const field = findField();
+    field.focus();
+    fireEvent.change(field, { target: { value: "trunk" } });
+    fireEvent.keyDown(field, { key: "Escape" });
+    expect(field.value).toBe("");
+    expect(document.activeElement).toBe(field);
+    fireEvent.keyDown(field, { key: "Escape" });
+    expect(document.activeElement).toBe(railItem("env_a"));
+    field.focus();
+    fireEvent.keyDown(field, { key: "ArrowDown" });
+    expect(document.activeElement).toBe(railItem("env_a"));
+    field.focus();
+    fireEvent.change(field, { target: { value: "trunk" } });
+    fireEvent.keyDown(field, { key: "Enter" });
+    await waitFor(() => expect(page.subPath()).toBe("proj_2/env_c/c1"));
+  });
 
-  it("LIST-18: typing narrows the list to matching rows, server hints included", async () => {
-    const w = world({
-      threads: [thread({ id: "thr_1", title: "Fix flaky tests" })],
+  it("LIST-45: ↓ and ↑ move between environments without wrapping or selecting; ↑ from the first returns to the find field", async () => {
+    const w = twoProjects({
       terminals: [
-        terminal({ id: "web", title: "dev server" }),
-        terminal({ id: "sh", title: "zsh" }),
-        terminal({ id: "t", title: "pnpm test", threadId: "thr_1" }),
-      ],
-      output: { web: "  ➜  Local:   http://localhost:3000/\r\n" },
-    });
-    await mountPage(w, "proj_1/all");
-    expect(await screen.findByPlaceholderText("Filter terminals, environments, threads…")).toBe(
-      await filterBox(),
-    );
-    const summary = await screen.findByRole("region", { name: "Summary" });
-    await waitFor(() => expect(summary).toHaveTextContent("1 server"));
-    await type("3000");
-    expect(await screen.findByText("dev server")).toBeTruthy();
-    expect(screen.queryByText("zsh")).toBeNull();
-    expect(screen.queryByRole("region", { name: "From threads" })).toBeNull();
-    await type("flaky pnpm");
-    expect(await screen.findByText("pnpm test")).toBeTruthy();
-    expect(screen.queryByText("dev server")).toBeNull();
-    await type("   ");
-    expect(await screen.findByText("zsh")).toBeTruthy();
-    await type("nothing");
-    expect(await screen.findByText("No terminals match “nothing”.")).toBeTruthy();
-  });
-
-  it("LIST-18: the selected terminal's row hides when it does not match, and its view stays open", async () => {
-    const w = world({
-      terminals: [terminal({ id: "t1", title: "one" }), terminal({ id: "t2", title: "two" })],
-    });
-    await mountPage(w, "proj_1/all/t1");
-    await sidebar().findByText("one");
-    await type("two");
-    await waitFor(() => expect(sidebar().queryByText("one")).toBeNull());
-    expect(screen.getByTestId("terminal-view")).toHaveTextContent("t1");
-  });
-
-  it("LIST-19: a collapsed section opens while filtering, and is collapsed again after", async () => {
-    const w = manyEnvironments(1);
-    w.terminals.push(
-      terminal({ id: "a1", title: "one" }),
-      terminal({ id: "b1", title: "two", environmentId: "env_0" }),
-    );
-    await mountPage(w, "proj_1/all");
-    fireEvent.click(await screen.findByRole("button", { name: "Collapse wt-0" }));
-    expect(screen.queryByText("two")).toBeNull();
-    await type("two");
-    const section = await screen.findByRole("region", { name: "wt-0" });
-    expect(within(section).getByText("two")).toBeTruthy();
-    expect(screen.queryByRole("button", { name: /^(Collapse|Expand) / })).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Clear filter" }));
-    expect(await screen.findByRole("button", { name: "Expand wt-0" })).toBeTruthy();
-    expect(screen.queryByText("two")).toBeNull();
-  });
-
-  it("LIST-19, LIST-20, LIST-22: matching empty environments follow the no-match message; Enter selects the first", async () => {
-    const w = manyEnvironments(3);
-    w.terminals.push(terminal({ id: "a1", title: "one" }));
-    const page = await mountPage(w, "proj_1/all");
-    await screen.findByText("Select a terminal to see it here.");
-    const input = await type("wt- 1");
-    const empty = await screen.findByRole("region", { name: "Empty environments" });
-    expect(
-      within(empty)
-        .getAllByRole("button")
-        .map((b) => b.textContent),
-    ).toEqual(["wt-1"]);
-    expect(screen.getByText("No terminals match “wt- 1”.")).toBeTruthy();
-    fireEvent.keyDown(input, { key: "Enter" });
-    await waitFor(() => expect(page.subPath()).toBe("proj_1/env_1"));
-    expect(input).toHaveValue("wt- 1");
-
-    // From the header itself, focus stays in the page once the header is gone.
-    page.goTo("proj_1/all");
-    const header = await screen.findByRole("button", { name: "wt-1" });
-    header.focus();
-    fireEvent.click(header);
-    await waitFor(() => expect(page.subPath()).toBe("proj_1/env_1"));
-    expect(document.activeElement).toBe(input);
-  });
-
-  it("LIST-19, LIST-20: before the list is complete, no empty environments or no-match message", async () => {
-    const w = manyEnvironments(2);
-    w.threads.push(thread({ id: "thr_1" }), thread({ id: "thr_2" }));
-    const page = await mountPage(w, "proj_1/all");
-    const slow = gate();
-    const real = page.sdk.terminals.list.getMockImplementation();
-    page.sdk.terminals.list.mockImplementation(async (args) => {
-      if (args.scope.kind === "thread" && args.scope.threadId === "thr_2") await slow.promise;
-      return real?.(args) as never;
-    });
-    await type("wt");
-    expect(await screen.findByText(/Scanning threads…/)).toBeTruthy();
-    expect(screen.queryByText(/No terminals match/)).toBeNull();
-    expect(screen.queryByRole("region", { name: "Empty environments" })).toBeNull();
-    slow.release();
-    expect(await screen.findByRole("region", { name: "Empty environments" })).toBeTruthy();
-    expect(screen.getByText("No terminals match “wt”.")).toBeTruthy();
-  });
-
-  it("LIST-19: an environment that failed to list keeps its section and error", async () => {
-    const w = twoEnvironments();
-    w.terminals.push(terminal({ id: "a1", title: "one" }));
-    const page = await mountPage(w, "proj_1/all");
-    const real = page.sdk.terminals.list.getMockImplementation();
-    page.sdk.terminals.list.mockImplementation(async (args) => {
-      if (args.scope.kind === "environment" && args.scope.environmentId === "env_b") {
-        throw new Error("host offline");
-      }
-      return real?.(args) as never;
-    });
-    await screen.findByText("Could not list this environment's terminals: host offline");
-    await type("one");
-    expect(await screen.findByRole("region", { name: "feature" })).toHaveTextContent(
-      "host offline",
-    );
-    expect(screen.getByText("one")).toBeTruthy();
-  });
-
-  it("LIST-20: in a single environment, says nothing matches once listed", async () => {
-    await mountPage(world({ terminals: [terminal({ id: "t1", title: "one" })] }), "proj_1/env_a");
-    await screen.findByText("one");
-    await type("zzz");
-    expect(await screen.findByText("No terminals match “zzz”.")).toBeTruthy();
-    expect(screen.queryByText("No terminals here yet.")).toBeNull();
-  });
-
-  it("LIST-21: the filter survives an environment change, clears on a project change, and the summary ignores it", async () => {
-    const w = world({
-      projects: [
-        { id: "proj_1", name: "Project one" },
-        { id: "proj_2", name: "Project two" },
-      ],
-      terminals: [terminal({ id: "t1", title: "one" }), terminal({ id: "t2", title: "two" })],
-    });
-    const page = await mountPage(w, "proj_1/all");
-    const input = await type("one");
-    const summary = await screen.findByRole("region", { name: "Summary" });
-    await waitFor(() => expect(summary).toHaveTextContent(/^2 running$/));
-    fireEvent.click(await screen.findByRole("button", { name: "main" }));
-    await waitFor(() => expect(page.subPath()).toBe("proj_1/env_a"));
-    expect(await filterBox()).toHaveValue("one");
-    expect(screen.queryByText("two")).toBeNull();
-    page.goTo("proj_2/all");
-    await waitFor(() => expect(input).toHaveValue(""));
-  });
-
-  it("LIST-22: `/` focuses the filter and selects its text, but not from a text field", async () => {
-    const w = world({ terminals: [terminal({ id: "t1", title: "one" })] });
-    await mountPage(w, "proj_1/env_a");
-    const input = await filterBox();
-    fireEvent.change(input, { target: { value: "on" } });
-    const row = await rowButton("one");
-    row.focus();
-    fireEvent.keyDown(row, { key: "/" });
-    expect(document.activeElement).toBe(input);
-    expect([input.selectionStart, input.selectionEnd]).toEqual([0, 2]);
-
-    // A click on blank space focuses the page itself.
-    const page = input.closest<HTMLElement>('[tabindex="-1"]');
-    if (!page) throw new Error("no focusable page root");
-    page.focus();
-    fireEvent.keyDown(page, { key: "/" });
-    expect(document.activeElement).toBe(input);
-
-    const menu = await openRowMenu("one");
-    fireEvent.click(within(menu).getByRole("menuitem", { name: "Rename" }));
-    const title = await screen.findByRole("textbox", { name: "Terminal title" });
-    title.focus();
-    fireEvent.keyDown(title, { key: "/" });
-    expect(document.activeElement).toBe(title);
-  });
-
-  it("LIST-22: Escape clears the filter, then moves to the selected row; ↓ enters the list; Enter selects the first row", async () => {
-    const w = world({
-      terminals: [terminal({ id: "t1", title: "one" }), terminal({ id: "t2", title: "two" })],
-    });
-    const page = await mountPage(w, "proj_1/env_a/t2");
-    const input = await type("o");
-    input.focus();
-    fireEvent.keyDown(input, { key: "Escape" });
-    expect(input).toHaveValue("");
-    expect(document.activeElement).toBe(input);
-    fireEvent.keyDown(input, { key: "Escape" });
-    expect(document.activeElement).toBe(await rowButton("two"));
-
-    input.focus();
-    fireEvent.keyDown(input, { key: "ArrowDown" });
-    expect(document.activeElement).toBe(await rowButton("one"));
-
-    fireEvent.change(input, { target: { value: "one" } });
-    fireEvent.keyDown(input, { key: "Enter" });
-    await waitFor(() => expect(page.subPath()).toBe("proj_1/env_a/t1"));
-  });
-
-  it("LIST-23: arrows, Home, and End move focus without wrapping or selecting; ↑ from the first returns to the filter", async () => {
-    const w = world({
-      terminals: [
-        terminal({ id: "t1", title: "one" }),
-        terminal({ id: "t2", title: "two" }),
-        terminal({ id: "t3", title: "three" }),
+        terminal({ id: "a1" }),
+        terminal({ id: "b1", environmentId: "env_b" }),
+        terminal({ id: "c1", environmentId: "env_c" }),
       ],
     });
-    const page = await mountPage(w, "proj_1/env_a/t1");
-    const [one, two, three] = [
-      await rowButton("one"),
-      await rowButton("two"),
-      await rowButton("three"),
-    ];
-    const navigated = page.navigations().length;
-    one.focus();
-    fireEvent.keyDown(one, { key: "ArrowDown" });
-    expect(document.activeElement).toBe(two);
-    fireEvent.keyDown(two, { key: "End" });
-    expect(document.activeElement).toBe(three);
-    fireEvent.keyDown(three, { key: "ArrowDown" });
-    expect(document.activeElement).toBe(three);
-    fireEvent.keyDown(three, { key: "Home" });
-    expect(document.activeElement).toBe(one);
-    fireEvent.keyDown(one, { key: "ArrowUp" });
-    expect(document.activeElement).toBe(await filterBox());
-    expect(page.navigations()).toHaveLength(navigated);
-    expect(page.subPath()).toBe("proj_1/env_a/t1");
-    // Enter and Space select through the native button.
-    expect(two.tagName).toBe("BUTTON");
-    expect(two).toHaveAttribute("type", "button");
+    const page = await mountPage(w, "proj_1/env_a/a1");
+    await waitFor(() => expect(railItems()).toHaveLength(3));
+    const a = railItem("env_a") as HTMLElement;
+    a.focus();
+    fireEvent.keyDown(a, { key: "ArrowDown" });
+    expect(document.activeElement).toBe(railItem("env_b"));
+    fireEvent.keyDown(document.activeElement as Element, { key: "ArrowDown" });
+    expect(document.activeElement).toBe(railItem("env_c"));
+    fireEvent.keyDown(document.activeElement as Element, { key: "ArrowDown" });
+    expect(document.activeElement).toBe(railItem("env_c"));
+    expect(page.subPath()).toBe("proj_1/env_a/a1");
+    fireEvent.keyDown(document.activeElement as Element, { key: "ArrowUp" });
+    fireEvent.keyDown(document.activeElement as Element, { key: "ArrowUp" });
+    fireEvent.keyDown(document.activeElement as Element, { key: "ArrowUp" });
+    expect(document.activeElement).toBe(findField());
+    // Enter or Space on a focused environment selects it: it is a button.
+    expect(railItem("env_c")?.tagName).toBe("BUTTON");
   });
 
-  it("LIST-23: keys on a row's ⋯ button keep their meaning, and Tab order is unchanged", async () => {
-    const w = world({
-      terminals: [terminal({ id: "t1", title: "one" }), terminal({ id: "t2", title: "two" })],
-    });
-    await mountPage(w, "proj_1/env_a");
-    const trigger = await screen.findByRole("button", { name: "Actions for one" });
-    const two = await rowButton("two");
-    for (const button of [
-      await rowButton("one"),
-      two,
-      trigger,
-      screen.getByRole("button", { name: "Actions for two" }),
-    ]) {
-      expect(button).not.toHaveAttribute("tabindex", "-1");
-    }
-    trigger.focus();
-    fireEvent.keyDown(trigger, { key: "ArrowDown" });
-    expect(await screen.findByRole("menu")).toBeTruthy();
-    expect(document.activeElement).not.toBe(two);
-  });
-
-  it("NAV-9: typing in the filter adds no history entry, and opening the page again starts unfiltered", async () => {
-    const w = world({ terminals: [terminal({ id: "t1", title: "one" })] });
-    const page = await mountPage(w, "proj_1/env_a");
-    await screen.findByText("one");
-    const navigated = page.navigations().length;
-    await type("zzz");
-    await screen.findByText(/No terminals match/);
-    expect(page.navigations()).toHaveLength(navigated);
-    expect(page.subPath()).toBe("proj_1/env_a");
-    stopFollowing();
-    cleanup();
-    await mountPage(w, "proj_1/env_a");
-    expect(await filterBox()).toHaveValue("");
-    expect(await screen.findByText("one")).toBeTruthy();
-  });
-
-  it("ACT-7: with a filter, closing the selected terminal selects the next matching row", async () => {
-    const w = world({
-      terminals: [
-        terminal({ id: "t1", title: "dev one" }),
-        terminal({ id: "t2", title: "zsh" }),
-        terminal({ id: "t3", title: "dev two" }),
-      ],
-    });
-    const page = await mountPage(w, "proj_1/env_a/t1");
-    await type("dev");
-    const menu = await openRowMenu("dev one");
-    fireEvent.click(within(menu).getByRole("menuitem", { name: "Close" }));
-    await waitFor(() => expect(page.subPath()).toBe("proj_1/env_a/t3"));
-  });
-});
-
-describe("page layout", () => {
-  /** The bar above the selected terminal. */
-  const bar = () => within(screen.getByRole("region", { name: "Terminal" }));
-
-  /** Opens a menu from its trigger with the keyboard, as Radix expects in jsdom. */
-  const openMenu = async (trigger: HTMLElement) => {
-    trigger.focus();
-    fireEvent.keyDown(trigger, { key: "Enter" });
-    return screen.findByRole("menu");
-  };
-
-  it("LIST-26: the project and environment pickers sit on one line as borderless triggers, project first", async () => {
-    await mountPage(twoEnvironments(), "proj_1/env_b");
-    const project = await screen.findByRole("combobox", { name: "Project" });
-    const environment = screen.getByRole("combobox", { name: "Environment" });
-    expect(project.parentElement).toBe(environment.parentElement);
-    expect(project.compareDocumentPosition(environment)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
-    for (const trigger of [project, environment]) expect(trigger).toHaveClass("border-0");
-    const list = sidebar();
-    const order = [
-      environment,
-      list.getByRole("button", { name: "New terminal in feature" }),
-      list.getByRole("textbox", { name: "Filter terminals" }),
-      list.getByRole("region", { name: "Summary" }),
-    ];
-    for (const [index, element] of order.slice(1).entries()) {
-      expect(order[index]?.compareDocumentPosition(element)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
-    }
-  });
-
-  it("LIST-9: the main part names the environment it starts in, when there is one", async () => {
-    const page = await mountPage(twoEnvironments(), "proj_1/env_b");
-    fireEvent.click(await sidebar().findByRole("button", { name: "New terminal in feature" }));
-    await waitFor(() => expect(page.subPath()).toBe("proj_1/env_b/term_new_1"));
-    page.goTo("proj_1/all");
-    expect(await sidebar().findByRole("button", { name: "New terminal" })).toHaveTextContent(
-      /^New terminal$/,
+  it("LIST-29: returning puts the environment that was at the top of the rail back where it was", async () => {
+    const many = Array.from({ length: 20 }, (_, i) =>
+      environment(`env_${i}`, "proj_1", { name: `wt-${i}` }),
     );
-  });
-
-  it("LIST-25: with no terminal selected, the pane says so and offers New terminal and the list's keys", async () => {
-    const w = twoEnvironments();
-    w.terminals.push(terminal({ id: "t1", title: "one" }));
-    const page = await mountPage(w, "proj_1/all");
-    const main = within(await screen.findByRole("main"));
-    expect(await main.findByText("Select a terminal to see it here.")).toBeTruthy();
-    const keys = screen.getByText("filter").closest("[data-key-hints]");
-    expect(keys).toHaveClass("hidden", "pointer-fine:flex");
-    expect(keys).toHaveTextContent("/filter↑↓move↵open");
-    // No environment to start in: the main part opens the menu, as LIST-9's does.
-    fireEvent.click(main.getByRole("button", { name: "New terminal" }));
-    const menu = await screen.findByRole("menu");
-    fireEvent.click(within(menu).getByRole("menuitem", { name: "feature" }));
-    await waitFor(() => expect(page.subPath()).toBe("proj_1/all/term_new_1"));
-  });
-
-  it("LIST-25, LIST-9: in one environment, the pane's New terminal names where it starts", async () => {
-    const page = await mountPage(twoEnvironments(), "proj_1/env_b");
-    const main = within(await screen.findByRole("main"));
-    fireEvent.click(await main.findByRole("button", { name: "New terminal in feature" }));
-    await waitFor(() => expect(page.subPath()).toBe("proj_1/env_b/term_new_1"));
-  });
-
-  it("LIST-15, LIST-16, LIST-18: environment names, Clean up, and Clear filter are at least 32px on a coarse pointer", async () => {
     const w = world({
-      threads: [thread({ id: "thr_idle", status: "idle" })],
-      terminals: [terminal({ id: "left", title: "pnpm test", threadId: "thr_idle" })],
+      environments: many,
+      terminals: many.map((env) => terminal({ id: `t_${env.id}`, environmentId: env.id })),
     });
-    await mountPage(w, "proj_1/all");
-    expect(await screen.findByRole("button", { name: "main" })).toHaveClass(
-      "pointer-coarse:min-h-8",
-    );
-    expect(await screen.findByRole("button", { name: "Clean up 1 stale" })).toHaveClass(
-      "pointer-coarse:min-h-8",
-    );
-    fireEvent.change(sidebar().getByRole("textbox", { name: "Filter terminals" }), {
-      target: { value: "pnpm" },
-    });
-    expect(await screen.findByRole("button", { name: "Clear filter" })).toHaveClass(
-      "pointer-coarse:size-8",
-    );
-  });
-
-  it("LIST-25: no New terminal button while still looking or after a failed listing", async () => {
-    const w = world({ threads: [thread({ id: "thr_1" })] });
-    const page = await mountPage(w, "proj_1/all");
-    page.sdk.threads.list.mockRejectedValue(new Error("bb is restarting"));
-    const main = within(await screen.findByRole("main"));
-    expect(await main.findByText(/Could not list every terminal yet/)).toBeTruthy();
-    expect(main.queryByRole("button", { name: /^New terminal/ })).toBeNull();
-  });
-
-  it("VIEW-9: the bar shows the title, environment, exit code, and a link to the server hint, outside the terminal view", async () => {
-    const w = world({
-      threads: [thread({ id: "thr_1", status: "active" })],
-      terminals: [terminal({ id: "web", title: "dev server", threadId: "thr_1" })],
-      output: { web: "  ➜  Local:   http://localhost:3000/\r\n" },
-    });
-    const page = await mountPage(w, "proj_1/env_a/web");
-    await screen.findByTestId("terminal-view");
-    expect(bar().getByRole("heading", { name: "dev server" })).toBeTruthy();
-    expect(bar().getByText("main")).toBeTruthy();
-    const link = await bar().findByRole("link", { name: /:3000/ });
-    expect(link).toHaveAttribute("href", "http://localhost:3000/");
-    expect(link).toHaveAttribute("target", "_blank");
-    expect(link).toHaveAttribute("rel", "noopener noreferrer");
-    expect(link.getAttribute("aria-label")).toMatch(/read from recent output/);
-    const region = screen.getByRole("region", { name: "Terminal" });
-    expect(region).not.toContainElement(screen.getByTestId("terminal-view"));
-    expect(region.closest(".th-terminal")).toBeNull();
-
-    const session = w.terminals[0];
-    if (!session) throw new Error("fixture");
-    session.status = "exited";
-    session.exitCode = 2;
-    page.emitThreadChanged({ id: "thr_1", changes: ["terminals-changed"] });
-    expect(await bar().findByText("exit 2")).toBeTruthy();
-  });
-
-  it("VIEW-10: the terminal sits in an inset box that the view measures inside", async () => {
-    await mountPage(world({ terminals: [terminal({ id: "t1" })] }), "proj_1/env_a/t1");
-    const view = await screen.findByTestId("terminal-view");
-    const inset = view.parentElement;
-    expect(inset).toHaveAttribute("data-terminal-inset");
-    expect(inset).toHaveClass("px-4", "py-3.5", "min-h-0", "min-w-0", "flex-1");
-  });
-
-  it("ACT-8: the bar restarts the shell, and its menu renames and closes with the row's confirmation", async () => {
-    const w = world({
-      threads: [thread({ id: "thr_1", title: "Release prep", status: "idle" })],
-      terminals: [terminal({ id: "t1", title: "pnpm test", threadId: "thr_1" })],
-    });
-    const page = await mountPage(w, "proj_1/env_a/t1");
-    await screen.findByTestId("terminal-view");
-    fireEvent.click(bar().getByRole("button", { name: "Restart shell" }));
-    await waitFor(() =>
-      expect(page.sdk.terminals.restart).toHaveBeenCalledWith({ terminalId: "t1" }),
-    );
-
-    let menu = await openMenu(bar().getByRole("button", { name: "More actions for pnpm test" }));
-    expect(
-      within(menu)
-        .getAllByRole("menuitem")
-        .map((item) => item.textContent),
-    ).toEqual(["Rename", "Close"]);
-    fireEvent.click(within(menu).getByRole("menuitem", { name: "Rename" }));
-    fireEvent.change(await screen.findByRole("textbox", { name: "Terminal title" }), {
-      target: { value: "tests" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Rename" }));
-    expect(await bar().findByRole("heading", { name: "tests" })).toBeTruthy();
-
-    menu = await openMenu(bar().getByRole("button", { name: "More actions for tests" }));
-    fireEvent.click(within(menu).getByRole("menuitem", { name: "Close" }));
-    const dialog = await screen.findByRole("dialog");
-    expect(dialog).toHaveTextContent("Release prep");
-    fireEvent.click(within(dialog).getByRole("button", { name: "Close terminal" }));
-    await waitFor(() =>
-      expect(page.sdk.terminals.close).toHaveBeenCalledWith({ terminalId: "t1", mode: "force" }),
-    );
-    await waitFor(() => expect(page.subPath()).toBe("proj_1/env_a"));
-  });
-
-  it("ACT-8: Close on an exited terminal dismisses its row", async () => {
-    const w = world({
-      threads: [thread({ id: "thr_1", status: "active" })],
-      terminals: [terminal({ id: "t1", title: "build", threadId: "thr_1" })],
-    });
-    const page = await mountPage(w, "proj_1/env_a/t1");
-    await screen.findByTestId("terminal-view");
-    const session = w.terminals[0];
-    if (!session) throw new Error("fixture");
-    session.status = "exited";
-    session.exitCode = 1;
-    page.emitThreadChanged({ id: "thr_1", changes: ["terminals-changed"] });
-    await sidebar().findByText("exit 1");
-    const menu = await openMenu(bar().getByRole("button", { name: "More actions for build" }));
-    fireEvent.click(within(menu).getByRole("menuitem", { name: "Close" }));
-    await waitFor(() => expect(sidebar().queryByText("build")).toBeNull());
-    expect(page.sdk.terminals.close).not.toHaveBeenCalled();
-  });
-
-  it("ACT-8: renaming a linked terminal the list does not hold updates the bar", async () => {
-    const w = world({
-      terminals: [terminal({ id: "t_far", title: "far", threadId: "thr_unknown" })],
-    });
-    await mountPage(w, "proj_1/env_a/t_far");
-    await screen.findByTestId("terminal-view");
-    expect(bar().getByRole("heading", { name: "far" })).toBeTruthy();
-    const menu = await openMenu(bar().getByRole("button", { name: "More actions for far" }));
-    fireEvent.click(within(menu).getByRole("menuitem", { name: "Rename" }));
-    fireEvent.change(await screen.findByRole("textbox", { name: "Terminal title" }), {
-      target: { value: "near" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Rename" }));
-    expect(await bar().findByRole("heading", { name: "near" })).toBeTruthy();
-  });
-});
-
-describe("returning to the page", () => {
-  const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-  const summary = () => screen.getByRole("region", { name: "Summary" });
-  const filterBox = () =>
-    screen.findByRole<HTMLInputElement>("textbox", { name: "Filter terminals" });
-  /** Leaves the page long enough to count as leaving it. */
-  const away = async (page: { leave(): void }) => {
-    page.leave();
-    await sleep(20);
-  };
-  /** Holds every call of `method` until the returned function is called. */
-  function hold<A extends unknown[], R>(method: {
-    getMockImplementation(): ((...args: A) => R) | undefined;
-    mockImplementation(fn: (...args: A) => R): unknown;
-  }) {
-    const real = method.getMockImplementation();
-    const { promise, release } = gate();
-    method.mockImplementation(((...args: A) => promise.then(() => real?.(...args))) as unknown as (
-      ...args: A
-    ) => R);
-    return release;
-  }
-
-  it("LIST-27, LIST-17, NAV-6: shows the last known rows at once, says so in the summary and the title bar, and shows no scan progress", async () => {
-    const w = world({
-      threads: [thread({ id: "thr_1" })],
-      terminals: [
-        terminal({ id: "t1", title: "dev" }),
-        terminal({ id: "t2", title: "pnpm test", threadId: "thr_1" }),
-      ],
-    });
-    const page = await mountPage(w, "proj_1/all");
-    await sidebar().findByText("pnpm test");
-    await waitFor(() => expect(summary()).toHaveTextContent(/^2 running/));
-    await away(page);
-    const release = hold(page.sdk.threads.list);
-    page.returnTo("proj_1/all");
-    expect(sidebar().getByText("pnpm test")).toBeInTheDocument();
-    expect(screen.queryByText(/Scanning threads/)).toBeNull();
-    expect(summary()).toHaveTextContent("Last known·2 running·Updating…");
-    expect(page.titleBar()).toHaveTextContent("Last known · 2 running");
-    release();
-    await waitFor(() => expect(summary()).toHaveTextContent(/^2 running/));
-    expect(page.titleBar()).toHaveTextContent(/^2 running$/);
-  });
-
-  it("LIST-27, LIST-10, LIST-25: last known rows never claim that nothing is there", async () => {
-    const page = await mountPage(world(), "proj_1/env_a");
-    await sidebar().findByText("No terminals here yet.");
-    expect(screen.getByText(/No terminals found/)).toBeInTheDocument();
-    await away(page);
-    const release = hold(page.sdk.terminals.list);
-    page.returnTo("proj_1/env_a");
-    await sleep(20);
-    expect(sidebar().queryByText("No terminals here yet.")).toBeNull();
-    expect(screen.queryByText(/No terminals found/)).toBeNull();
-    expect(sidebar().getByText("Loading terminals…")).toBeInTheDocument();
-    release();
-    expect(await sidebar().findByText("No terminals here yet.")).toBeInTheDocument();
-  });
-
-  it("LIST-27, LIST-16, LIST-19, LIST-20: while last known, no cleanup, no 'No terminals match', and no empty environments", async () => {
-    const w = twoEnvironments();
-    w.threads.push(thread({ id: "thr_idle", title: "Release prep" }));
-    w.terminals.push(terminal({ id: "left", title: "pnpm test", threadId: "thr_idle" }));
-    const page = await mountPage(w, "proj_1/all");
-    await waitFor(() => expect(summary()).toHaveTextContent("Clean up 1 stale"));
-    await away(page);
-    const release = hold(page.sdk.threads.list);
-    page.returnTo("proj_1/all");
-    expect(within(summary()).queryByRole("button")).toBeNull();
-    fireEvent.change(await filterBox(), { target: { value: "feature" } });
-    await sleep(20);
-    expect(screen.queryByText(/No terminals match/)).toBeNull();
-    expect(screen.queryByRole("region", { name: "Empty environments" })).toBeNull();
-    release();
-    expect(await screen.findByText(/No terminals match/)).toBeInTheDocument();
-    expect(screen.getByRole("region", { name: "Empty environments" })).toBeInTheDocument();
-  });
-
-  it("LIST-28, NAV-5: a selected terminal that went away meanwhile shows the gone notice and clears the selection", async () => {
-    const w = world({ terminals: [terminal({ id: "t1", title: "dev" })] });
-    const page = await mountPage(w, "proj_1/env_a/t1");
-    await screen.findByTestId("terminal-view");
-    await away(page);
-    w.terminals = [];
-    page.returnTo("proj_1/env_a/t1");
-    expect(await screen.findByText(/That terminal is gone/)).toBeInTheDocument();
-    await waitFor(() => expect(page.subPath()).toBe("proj_1/env_a"));
-  });
-
-  it("VIEW-7, LIST-11: when the view sees its terminal exit, the row shows the exit at once", async () => {
-    const w = world({ terminals: [terminal({ id: "t1", title: "dev" })] });
-    const page = await mountPage(w, "proj_1/env_a/t1");
-    await screen.findByTestId("terminal-view");
-    await waitFor(() => expect(summary()).toHaveTextContent(/^1 running/));
-    page.sdk.terminals.get.mockClear();
-    act(() => view.onExit?.("t1", "exited", 3, null));
-    expect(sidebar().getByText("exit 3")).toBeInTheDocument();
-    expect(summary()).toHaveTextContent(/^0 running/);
-    expect(page.sdk.terminals.get).not.toHaveBeenCalled();
-  });
-
-  it("NAV-10, NAV-4, NAV-8: the root route restores the project's remembered place, replacing the entry; a URL naming a project wins", async () => {
-    const w = world({ terminals: [terminal({ id: "t1", title: "dev" })] });
-    const page = await mountPage(w, "proj_1/env_a/t1");
-    await screen.findByTestId("terminal-view");
-    await away(page);
-    page.returnTo("");
-    await waitFor(() => expect(page.subPath()).toBe("proj_1/env_a/t1"));
-    expect(page.navigations().at(-1)).toEqual({ subPath: "proj_1/env_a/t1", replace: true });
-    await away(page);
-    page.returnTo("proj_1/all");
-    await sleep(50);
-    expect(page.subPath()).toBe("proj_1/all");
-  });
-
-  it("NAV-4, NAV-10: back from a page with no current project (home, settings), lands on the project the page last showed", async () => {
-    const w = world({
-      projects: [
-        { id: "proj_1", name: "Project one" },
-        { id: "proj_2", name: "Project two" },
-      ],
-    });
-    const page = await mountPage(w, "proj_2/all", { projectId: null });
-    await screen.findByRole("region", { name: "Summary" });
-    await away(page);
-    page.returnTo("");
-    await waitFor(() => expect(page.subPath()).toBe("proj_2/all"));
-    await sleep(50);
-    expect(page.subPath()).toBe("proj_2/all");
-  });
-
-  it("NAV-4, NAV-10: the project the page last showed wins over bb's current project, with its own place", async () => {
-    const w = world({
-      projects: [
-        { id: "proj_1", name: "Project one" },
-        { id: "proj_2", name: "Project two" },
-      ],
-      terminals: [terminal({ id: "t1", title: "dev" })],
-    });
-    const page = await mountPage(w, "proj_2/all", { projectId: "proj_2" });
-    await screen.findByRole("region", { name: "Summary" });
-    page.goTo("proj_1/env_a/t1");
-    await screen.findByTestId("terminal-view");
-    await away(page);
-    page.returnTo("");
-    await waitFor(() => expect(page.subPath()).toBe("proj_1/env_a/t1"));
-  });
-
-  it("LIST-21, NAV-9: the filter is kept on return to the same project, also through the root route, and cleared by a project change", async () => {
-    const w = world({
-      projects: [
-        { id: "proj_1", name: "Project one" },
-        { id: "proj_2", name: "Project two" },
-      ],
-      terminals: [terminal({ id: "t1", title: "one" }), terminal({ id: "t2", title: "two" })],
-    });
-    const page = await mountPage(w, "proj_1/all");
-    fireEvent.change(await filterBox(), { target: { value: "one" } });
-    await away(page);
-    page.returnTo("");
-    await waitFor(() => expect(page.subPath()).toBe("proj_1/all"));
-    expect(await filterBox()).toHaveValue("one");
-    expect(sidebar().queryByText("two")).toBeNull();
-    await away(page);
-    page.returnTo("proj_2/all");
-    expect(await filterBox()).toHaveValue("");
-    await away(page);
-    page.returnTo("proj_1/all");
-    expect(await filterBox()).toHaveValue("");
-  });
-
-  it("LIST-13: collapsed sections are remembered per project, across project switches and returns", async () => {
-    const w = twoEnvironments();
-    w.projects.push({ id: "proj_2", name: "Project two" });
-    w.terminals.push(terminal({ id: "a1", title: "on main" }));
-    w.terminals.push(terminal({ id: "b1", title: "on feature", environmentId: "env_b" }));
-    const page = await mountPage(w, "proj_1/all");
-    fireEvent.click(await screen.findByRole("button", { name: "Collapse main" }));
-    expect(sidebar().queryByText("on main")).toBeNull();
-    page.goTo("proj_2/all");
-    await sleep(20);
-    page.goTo("proj_1/all");
-    expect(await screen.findByRole("button", { name: "Expand main" })).toBeInTheDocument();
-    await away(page);
-    page.returnTo("proj_1/all");
-    expect(await screen.findByRole("button", { name: "Expand main" })).toBeInTheDocument();
-    expect(sidebar().getByText("on feature")).toBeInTheDocument();
-  });
-
-  it("LIST-29: returning puts the row that was at the top of the list back where it was; another project starts at the top", async () => {
-    const terminals = Array.from({ length: 30 }, (_, i) =>
-      terminal({ id: `r${i}`, title: `term ${i}`, createdAt: i }),
-    );
-    // A layout: the list starts 100px down and shows 200px; each row is 40px.
     const tops = new WeakMap<Element, number>();
     const scroller = () => {
       const element = screen
-        .getByRole("complementary", { name: "Terminal list" })
+        .getByRole("navigation", { name: "Environments" })
         .querySelector<HTMLElement>(".overflow-y-auto");
       if (!element) throw new Error("no scroller");
       return element;
@@ -1413,113 +675,225 @@ describe("returning to the page", () => {
       },
     });
     const box = (top: number, height: number) =>
-      ({ top, bottom: top + height, left: 0, right: 300, width: 300, height }) as DOMRect;
+      ({ top, bottom: top + height, left: 0, right: 240, width: 240, height }) as DOMRect;
     vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
       this: Element,
     ) {
-      if (this.classList.contains("overflow-y-auto")) return box(100, 200);
-      const id = (this as HTMLElement).dataset?.terminalId;
-      if (id) return box(100 + Number(id.slice(1)) * 40 - scroller().scrollTop, 40);
+      if (this.classList.contains("overflow-y-auto")) return box(44, 200);
+      const id = (this as HTMLElement).dataset?.environmentId;
+      if (id) return box(44 + Number(id.slice(4)) * 28 - scroller().scrollTop, 28);
       return box(0, 0);
     });
     try {
-      const page = await mountPage(
-        world({
-          projects: [
-            { id: "proj_1", name: "Project one" },
-            { id: "proj_2", name: "Project two" },
-          ],
-          terminals,
-        }),
-        "proj_1/env_a",
-      );
-      await sidebar().findByText("term 29");
-      scroller().scrollTop = 410;
+      const page = await mountPage(w, "proj_1/env_0/t_env_0");
+      await waitFor(() => expect(railItems()).toHaveLength(20));
+      scroller().scrollTop = 290;
       fireEvent.scroll(scroller());
       await sleep(50);
       await away(page);
-      page.returnTo("proj_1/env_a");
-      expect(scroller().scrollTop).toBe(410);
-      // A project with no remembered position starts at the top.
-      page.goTo("proj_2/all");
-      expect(scroller().scrollTop).toBe(0);
+      page.returnTo("proj_1/env_0/t_env_0");
+      await waitFor(() => expect(railItems()).toHaveLength(20));
+      // env_10 sat at the top, 10px cut off: it is put back there.
+      expect(scroller().scrollTop).toBe(290);
     } finally {
       if (original) Object.defineProperty(Element.prototype, "scrollTop", original);
-      vi.restoreAllMocks();
     }
   });
 
-  it("ACT-5: Clean up refreshes first and lists only what is stale then; a failed refresh opens nothing", async () => {
+  it("LIST-17: during the first listing the rail shows its progress; a project that fails shows its error and keeps what it has", async () => {
+    const w = twoProjects({ terminals: [terminal({ id: "a1" })] });
+    let release: () => void = () => {};
+    await mountPage(w, "proj_1/env_a/a1", undefined, (sdk) => {
+      release = hold(sdk.threads.list);
+    });
+    expect(await rail().findByText(/Looking for terminals…/)).toBeInTheDocument();
+    expect(screen.queryByText(/Nothing running/)).toBeNull();
+    release();
+    await waitFor(() => expect(rail().queryByText(/Looking for terminals…/)).toBeNull());
+
+    const failing = twoProjects({ terminals: [terminal({ id: "a1" })] });
+    cleanup();
+    await mountPage(failing, "proj_1/env_a/a1", undefined, (sdk) => {
+      const real = sdk.threads.list.getMockImplementation();
+      sdk.threads.list.mockImplementation(async (args) => {
+        if (args.projectId === "proj_2") throw new Error("bb is restarting");
+        return real?.(args) as never;
+      });
+    });
+    expect(await rail().findByText("bb is restarting")).toBeInTheDocument();
+    expect(rail().getByRole("button", { name: "Project two" })).toBeInTheDocument();
+    expect(railItems()).toEqual(["env_a"]);
+  });
+
+  it("LIST-25: with nothing listed, the pane says how far the listing got", async () => {
+    const page = await mountPage(twoProjects(), "", { projectId: null });
+    expect(
+      await screen.findByText("Nothing running. Start a shell from a project's +."),
+    ).toBeInTheDocument();
+    expect(page.subPath()).toBe("");
+
+    cleanup();
+    await mountPage(twoProjects(), "", { projectId: null }, (sdk) => {
+      sdk.threads.list.mockRejectedValue(new Error("bb is restarting"));
+    });
+    expect(
+      await screen.findByText("Could not list every terminal yet; trying again shortly."),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/Nothing running/)).toBeNull();
+
+    cleanup();
+    await mountPage(twoProjects(), "", { projectId: null }, (sdk) => {
+      hold(sdk.threads.list);
+    });
+    expect(
+      await screen.findByText("Looking for terminals…", { selector: "p" }),
+    ).toBeInTheDocument();
+  });
+});
+
+describe("tabs", () => {
+  it("LIST-12: environment terminals first, then thread terminals, each oldest first", async () => {
     const w = world({
-      threads: [thread({ id: "thr_idle", title: "Release prep" })],
+      threads: [
+        thread({ id: "thr_new", latestAttentionAt: 9_000 }),
+        thread({ id: "thr_old", latestAttentionAt: 1_000 }),
+      ],
       terminals: [
-        terminal({ id: "l1", title: "pnpm test", threadId: "thr_idle" }),
-        terminal({ id: "l2", title: "vite", threadId: "thr_idle" }),
+        terminal({ id: "t_late", title: "late thread", threadId: "thr_new", createdAt: 40 }),
+        terminal({ id: "e2", title: "env two", createdAt: 30 }),
+        terminal({ id: "t_early", title: "early thread", threadId: "thr_old", createdAt: 10 }),
+        terminal({ id: "e1", title: "env one", createdAt: 20 }),
       ],
     });
-    const page = await mountPage(w, "proj_1/all");
-    await waitFor(() => expect(summary()).toHaveTextContent("Clean up 2 stale"));
-    const vite = w.terminals[1];
-    if (!vite) throw new Error("fixture");
-    vite.status = "exited";
-    fireEvent.click(within(summary()).getByRole("button", { name: "Clean up 2 stale" }));
-    const dialog = await screen.findByRole("dialog");
-    expect(dialog).toHaveTextContent("pnpm test");
-    expect(dialog).not.toHaveTextContent("vite");
-    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
-    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
-
-    const failed = vi.spyOn(toast, "error");
-    page.sdk.threads.list.mockRejectedValueOnce(new Error("bb is restarting"));
-    fireEvent.click(await within(summary()).findByRole("button", { name: /Clean up/ }));
-    await waitFor(() => expect(failed).toHaveBeenCalled());
-    expect(screen.queryByRole("dialog")).toBeNull();
+    await mountPage(w, "proj_1/env_a/e1");
+    await waitFor(() => expect(tabNames()).toHaveLength(4));
+    expect(tabNames()).toEqual(["env one", "env two", "early thread", "late thread"]);
   });
 
-  it("NAV-6: the title bar takes the URL's project as it renders, never the previous one's count", async () => {
+  it("LIST-38, LIST-7: a tab shows the title or Terminal, a running server's port, and an ended terminal dimmed with its exit code; nothing else", async () => {
     const w = world({
-      projects: [
-        { id: "proj_1", name: "Project one" },
-        { id: "proj_2", name: "Project two" },
-      ],
-      environments: [
-        ...world().environments,
-        {
-          id: "env_p2",
-          projectId: "proj_2",
-          name: "other",
-          branchName: null,
-          path: "/Users/me/other",
-          hostId: "host_1",
-          status: "ready",
-        },
-      ],
+      threads: [thread({ id: "thr_1", title: "Ship it", status: "idle" })],
       terminals: [
-        terminal({ id: "a1" }),
-        terminal({ id: "a2" }),
-        terminal({ id: "p2", environmentId: "env_p2" }),
+        terminal({ id: "web", title: "dev", createdAt: 1 }),
+        terminal({ id: "anon", title: "", createdAt: 2 }),
+        terminal({ id: "build", title: "build", createdAt: 3, threadId: "thr_1" }),
+      ],
+      output: { web: "VITE ready\r\n  ➜  Local:   http://localhost:3000/\r\n" },
+    });
+    const page = await mountPage(w, "proj_1/env_a/web");
+    const web = await screen.findByRole("tab", { name: "dev :3000" });
+    expect(tabs().getByRole("tab", { name: "Terminal" })).toBeInTheDocument();
+    const build = w.terminals[2];
+    if (!build) throw new Error("fixture");
+    build.status = "exited";
+    build.exitCode = 1;
+    page.emitThreadChanged({ id: "thr_1", changes: ["terminals-changed"] });
+    const ended = await tabs().findByRole("tab", { name: "build exit 1" });
+    expect(ended).toHaveClass("text-muted-foreground/60");
+    // No status dots, ages, folders, threads, or stale marks.
+    expect(ended).not.toHaveTextContent("Ship it");
+    expect(web.querySelector("[data-status], [role='img']")).toBeNull();
+    expect(screen.getByRole("tablist")).not.toHaveTextContent(/stale|idle|\d+[mhd]\b|~/);
+  });
+
+  it("LIST-39: clicking a tab selects it; ← → Home End move and select; the selected tab is kept in view", async () => {
+    const scrolled: string[] = [];
+    Element.prototype.scrollIntoView = function (this: Element) {
+      scrolled.push((this as HTMLElement).dataset.terminalId ?? "");
+    };
+    const w = world({
+      terminals: ["t1", "t2", "t3"].map((id, i) => terminal({ id, createdAt: i })),
+    });
+    const page = await mountPage(w, "proj_1/env_a/t1");
+    await screen.findByTestId("terminal-view");
+    expect(scrolled).toContain("t1");
+    const tab = (name: string) => tabs().getByRole("tab", { name });
+    expect(tab("t1")).toHaveAttribute("tabindex", "0");
+    expect(tab("t2")).toHaveAttribute("tabindex", "-1");
+    fireEvent.click(tab("t2"));
+    await waitFor(() => expect(page.subPath()).toBe("proj_1/env_a/t2"));
+    fireEvent.keyDown(tab("t2"), { key: "ArrowRight" });
+    await waitFor(() => expect(page.subPath()).toBe("proj_1/env_a/t3"));
+    expect(document.activeElement).toBe(tab("t3"));
+    fireEvent.keyDown(tab("t3"), { key: "ArrowRight" });
+    fireEvent.keyDown(tab("t3"), { key: "Home" });
+    await waitFor(() => expect(page.subPath()).toBe("proj_1/env_a/t1"));
+    fireEvent.keyDown(tab("t1"), { key: "End" });
+    await waitFor(() => expect(page.subPath()).toBe("proj_1/env_a/t3"));
+    fireEvent.keyDown(tab("t3"), { key: "ArrowLeft" });
+    await waitFor(() => expect(page.subPath()).toBe("proj_1/env_a/t2"));
+    expect(scrolled.at(-1)).toBe("t2");
+    expect(page.navigations().at(-1)?.replace).toBe(false);
+  });
+
+  it("LIST-40, VIEW-5: the + after the last tab starts a shell in the selected environment and selects it, answering its startup queries once", async () => {
+    const w = world({
+      threads: [thread({ id: "thr_1" })],
+      terminals: [
+        terminal({ id: "e1", title: "env", createdAt: 1 }),
+        terminal({ id: "t1", title: "thread", threadId: "thr_1", createdAt: 2 }),
       ],
     });
-    const page = await mountPage(w, "proj_1/all");
-    expect(await within(page.titleBar()).findByText("2 running")).toBeInTheDocument();
-    page.goTo("proj_2/all");
-    expect(page.titleBar()).not.toHaveTextContent("2 running");
-    expect(await within(page.titleBar()).findByText("1 running")).toBeInTheDocument();
+    const page = await mountPage(w, "proj_1/env_a/e1");
+    await screen.findByTestId("terminal-view");
+    fireEvent.click(screen.getByRole("button", { name: "New terminal in main" }));
+    await waitFor(() => expect(page.subPath()).toBe("proj_1/env_a/term_new_1"));
+    expect(page.sdk.terminals.create).toHaveBeenCalledWith(
+      expect.objectContaining({ scope: { kind: "environment", environmentId: "env_a" } }),
+    );
+    // Last of its group: after the environment terminals, before thread ones.
+    expect(tabNames()).toEqual(["env", "zsh", "thread"]);
+    await waitFor(() => expect(mounts).toContain("mount term_new_1 fresh"));
+    fireEvent.click(tabs().getByRole("tab", { name: "env" }));
+    await waitFor(() => expect(page.subPath()).toBe("proj_1/env_a/e1"));
+    fireEvent.click(tabs().getByRole("tab", { name: "zsh" }));
+    await waitFor(() => expect(page.subPath()).toBe("proj_1/env_a/term_new_1"));
+    await waitFor(() => expect(mounts.at(-1)).toBe("mount term_new_1"));
   });
 
-  it("LIST-27: while bb's realtime connection is down, the summary says Reconnecting…", async () => {
-    const page = await mountPage(world({ terminals: [terminal({ id: "t1" })] }), "proj_1/env_a");
-    await waitFor(() => expect(summary()).toHaveTextContent(/^1 running$/));
-    await page.slot.setRealtimeConnectionState("reconnecting");
-    expect(summary()).toHaveTextContent("Last known·1 running·Reconnecting…");
-    expect(page.titleBar()).toHaveTextContent("Last known · 1 running");
-    await page.slot.setRealtimeConnectionState("connected");
-    await waitFor(() => expect(summary()).toHaveTextContent(/^1 running$/));
-  });
-
-  it("LIST-32, ACT-7: a terminal the user ended from the view goes, and the next row is selected", async () => {
+  it("LIST-11, VIEW-7: a selected terminal that exits keeps its tab, stays selected and mounted, until dismissed", async () => {
     const w = world({
-      terminals: [terminal({ id: "t1", title: "shell" }), terminal({ id: "t2", title: "dev" })],
+      threads: [thread({ id: "thr_1" })],
+      terminals: [terminal({ id: "term_1", title: "dev", threadId: "thr_1" })],
+    });
+    const page = await mountPage(w, "proj_1/env_a/term_1");
+    await screen.findByTestId("terminal-view");
+    const real = page.sdk.terminals.get.getMockImplementation();
+    page.sdk.terminals.get.mockImplementation(async (args) => {
+      await sleep(150);
+      return real?.(args) as never;
+    });
+    const session = w.terminals[0];
+    if (!session) throw new Error("fixture");
+    session.status = "exited";
+    session.exitCode = 3;
+    page.emitThreadChanged({ id: "thr_1", changes: ["terminals-changed"] });
+    expect(await tabs().findByRole("tab", { name: "dev exit 3" })).toBeInTheDocument();
+    await sleep(300);
+    expect(page.subPath()).toBe("proj_1/env_a/term_1");
+    expect(mounts).toEqual(["mount term_1"]);
+    const menu = await openMenu(bar().getByRole("button", { name: "More actions for dev" }));
+    fireEvent.click(within(menu).getByRole("menuitem", { name: "Dismiss" }));
+    await waitFor(() => expect(screen.queryByRole("tab", { name: /dev/ })).toBeNull());
+    expect(page.sdk.terminals.close).not.toHaveBeenCalled();
+  });
+
+  it("VIEW-7, LIST-11: when the view sees its terminal exit, the tab shows it at once", async () => {
+    const w = world({ terminals: [terminal({ id: "t1", title: "dev" })] });
+    const page = await mountPage(w, "proj_1/env_a/t1");
+    await screen.findByTestId("terminal-view");
+    await waitFor(() => expect(page.titleBar()).toHaveTextContent("1 running"));
+    act(() => view.onExit?.("t1", "exited", 3, null));
+    expect(tabs().getByRole("tab", { name: "dev exit 3" })).toBeInTheDocument();
+    expect(page.titleBar()).toHaveTextContent("0 running");
+  });
+
+  it("LIST-32, ACT-7: a terminal the user ended from the view goes, and the tab to its right is selected", async () => {
+    const w = world({
+      terminals: [
+        terminal({ id: "t1", title: "shell", createdAt: 1 }),
+        terminal({ id: "t2", title: "dev", createdAt: 2 }),
+      ],
     });
     const page = await mountPage(w, "proj_1/env_a/t1");
     await screen.findByTestId("terminal-view");
@@ -1528,18 +902,373 @@ describe("returning to the page", () => {
     session.status = "exited";
     session.exitCode = 130;
     act(() => view.onExit?.("t1", "exited", 130, 400));
-    expect(sidebar().queryByText("shell")).toBeNull();
+    expect(tabs().queryByRole("tab", { name: /shell/ })).toBeNull();
     await waitFor(() => expect(page.subPath()).toBe("proj_1/env_a/t2"));
     await sleep(50);
-    expect(sidebar().queryByText("shell")).toBeNull();
+    expect(tabs().queryByRole("tab", { name: /shell/ })).toBeNull();
   });
 
-  it("LIST-32, LIST-11: a terminal that ends without recent typing in the view keeps its exited row", async () => {
+  it("LIST-32, LIST-11: a terminal that ends without recent typing in the view keeps its ended tab", async () => {
     const w = world({ terminals: [terminal({ id: "t1", title: "shell" })] });
     const page = await mountPage(w, "proj_1/env_a/t1");
     await screen.findByTestId("terminal-view");
     act(() => view.onExit?.("t1", "exited", 1, 6_000));
-    expect(sidebar().getByText("exit 1")).toBeInTheDocument();
+    expect(tabs().getByRole("tab", { name: "shell exit 1" })).toBeInTheDocument();
     expect(page.subPath()).toBe("proj_1/env_a/t1");
   });
+});
+
+describe("bar and actions", () => {
+  it("VIEW-9: the first line shows the title and, once exited, the exit code; the second where it runs and who owns it", async () => {
+    const hour = 3_600_000;
+    const w = world({
+      threads: [
+        thread({ id: "thr_parent", title: "Plan the release", status: "active" }),
+        thread({
+          id: "thr_1",
+          title: "Ship billing",
+          status: "idle",
+          latestAttentionAt: Date.now() - 2 * hour,
+          parentThreadId: "thr_parent",
+        }),
+      ],
+      terminals: [
+        terminal({
+          id: "web",
+          title: "dev server",
+          threadId: "thr_1",
+          initialCwd: "/Users/me/repo/apps/web",
+        }),
+      ],
+      output: { web: "  ➜  Local:   http://localhost:3000/\r\n" },
+    });
+    const page = await mountPage(w, "proj_1/env_a/web");
+    await screen.findByTestId("terminal-view");
+    expect(bar().getByRole("heading", { name: "dev server" })).toBeTruthy();
+    expect(bar().getByText("Project one/main apps/web")).toBeTruthy();
+    expect(bar().getByText("idle 2h")).toBeTruthy();
+    expect(await bar().findByText("spawned by Plan the release")).toBeTruthy();
+    fireEvent.click(bar().getByRole("button", { name: "Ship billing" }));
+    expect(page.slot.inspection.navigateCalls).toContainEqual(
+      expect.objectContaining({ method: "toThread", threadId: "thr_1" }),
+    );
+
+    const link = await bar().findByRole("link", { name: /:3000/ });
+    expect(link).toHaveAttribute("href", "http://localhost:3000/");
+    expect(link).toHaveTextContent("localhost:3000");
+    expect(link).toHaveAttribute("target", "_blank");
+    expect(link).toHaveAttribute("rel", "noopener noreferrer");
+    expect(link.getAttribute("aria-label")).toMatch(/read from recent output/);
+    const region = screen.getByRole("region", { name: "Terminal" });
+    expect(region).not.toContainElement(screen.getByTestId("terminal-view"));
+    expect(region.closest(".th-terminal")).toBeNull();
+
+    const session = w.terminals[0];
+    if (!session) throw new Error("fixture");
+    session.status = "exited";
+    session.exitCode = 2;
+    page.emitThreadChanged({ id: "thr_1", changes: ["terminals-changed"] });
+    expect(await bar().findByText("exit 2")).toBeTruthy();
+  });
+
+  it("VIEW-9: the folder is left out at the environment's path and shown with ~ outside it; an active thread shows no state; archived says so", async () => {
+    const w = world({
+      threads: [
+        thread({ id: "thr_on", title: "Busy", status: "active" }),
+        thread({ id: "thr_arch", title: "Old work", archivedAt: 10 }),
+      ],
+      terminals: [
+        terminal({
+          id: "t1",
+          title: "here",
+          threadId: "thr_on",
+          initialCwd: "/Users/me/repo",
+          createdAt: 1,
+        }),
+        terminal({
+          id: "t2",
+          title: "away",
+          threadId: "thr_arch",
+          initialCwd: "/Users/me/elsewhere",
+          createdAt: 2,
+        }),
+      ],
+    });
+    const page = await mountPage(w, "proj_1/env_a/t1");
+    await screen.findByTestId("terminal-view");
+    expect(bar().getByText("Project one/main")).toBeTruthy();
+    expect(bar().queryByText(/idle|archived|active/)).toBeNull();
+    fireEvent.click(tabs().getByRole("tab", { name: "away" }));
+    await waitFor(() => expect(page.subPath()).toBe("proj_1/env_a/t2"));
+    expect(await bar().findByText("Project one/main ~/elsewhere")).toBeTruthy();
+    expect(bar().getByText("archived")).toBeTruthy();
+  });
+
+  it("VIEW-9: keys pressed in the bar never reach the shell", async () => {
+    await mountPage(world({ terminals: [terminal({ id: "t1" })] }), "proj_1/env_a/t1");
+    await screen.findByTestId("terminal-view");
+    const region = screen.getByRole("region", { name: "Terminal" });
+    expect(region.closest("[data-terminal-inset]")).toBeNull();
+  });
+
+  it("VIEW-10: the terminal sits in an inset box that the view measures inside", async () => {
+    await mountPage(world({ terminals: [terminal({ id: "t1" })] }), "proj_1/env_a/t1");
+    const terminalView = await screen.findByTestId("terminal-view");
+    const inset = terminalView.parentElement;
+    expect(inset).toHaveAttribute("data-terminal-inset");
+    expect(inset).toHaveClass("px-4", "py-3.5", "min-h-0", "min-w-0", "flex-1");
+  });
+
+  it("ACT-8, ACT-2, ACT-3, ACT-4: the bar restarts the shell, and its menu renames and closes with the confirmation", async () => {
+    const w = world({
+      threads: [thread({ id: "thr_1", title: "Release prep", status: "active" })],
+      terminals: [
+        terminal({ id: "t0", title: "left", createdAt: 1 }),
+        terminal({ id: "t1", title: "pnpm test", threadId: "thr_1", createdAt: 2 }),
+      ],
+    });
+    const page = await mountPage(w, "proj_1/env_a/t1");
+    await screen.findByTestId("terminal-view");
+    fireEvent.click(bar().getByRole("button", { name: "Restart shell" }));
+    await waitFor(() =>
+      expect(page.sdk.terminals.restart).toHaveBeenCalledWith({ terminalId: "t1" }),
+    );
+
+    let menu = await openMenu(bar().getByRole("button", { name: "More actions for pnpm test" }));
+    expect(
+      within(menu)
+        .getAllByRole("menuitem")
+        .map((item) => item.textContent),
+    ).toEqual(["Rename", "Close", "Close terminals from settled threads…"]);
+    fireEvent.click(within(menu).getByRole("menuitem", { name: "Rename" }));
+    fireEvent.change(await screen.findByRole("textbox", { name: "Terminal title" }), {
+      target: { value: "tests" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Rename" }));
+    expect(await bar().findByRole("heading", { name: "tests" })).toBeTruthy();
+    expect(page.sdk.terminals.rename).toHaveBeenCalledWith({ terminalId: "t1", title: "tests" });
+    expect(tabs().getByRole("tab", { name: "tests" })).toBeInTheDocument();
+
+    menu = await openMenu(bar().getByRole("button", { name: "More actions for tests" }));
+    fireEvent.click(within(menu).getByRole("menuitem", { name: "Close" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog).toHaveTextContent("tests");
+    expect(dialog).toHaveTextContent("Release prep");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Close terminal" }));
+    await waitFor(() =>
+      expect(page.sdk.terminals.close).toHaveBeenCalledWith({ terminalId: "t1", mode: "force" }),
+    );
+    // ACT-7: no tab to the right, so the one to its left.
+    await waitFor(() => expect(page.subPath()).toBe("proj_1/env_a/t0"));
+  });
+
+  it("ACT-4, ACT-7: an environment terminal closes without asking, and the tab to its right is selected", async () => {
+    const w = world({
+      terminals: ["t1", "t2", "t3"].map((id, i) => terminal({ id, createdAt: i })),
+    });
+    const page = await mountPage(w, "proj_1/env_a/t2");
+    await screen.findByTestId("terminal-view");
+    const menu = await openMenu(bar().getByRole("button", { name: "More actions for t2" }));
+    fireEvent.click(within(menu).getByRole("menuitem", { name: "Close" }));
+    await waitFor(() => expect(page.subPath()).toBe("proj_1/env_a/t3"));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(tabNames()).toEqual(["t1", "t3"]);
+  });
+
+  it("ACT-6: a close that leaves the terminal running reports an error and keeps the tab", async () => {
+    const w = world({ terminals: [terminal({ id: "t1", title: "dev" })] });
+    const page = await mountPage(w, "proj_1/env_a/t1");
+    await screen.findByTestId("terminal-view");
+    const error = vi.spyOn(toast, "error");
+    page.sdk.terminals.close.mockImplementationOnce(
+      async () => ({ ...w.terminals[0], status: "running" }) as never,
+    );
+    const menu = await openMenu(bar().getByRole("button", { name: "More actions for dev" }));
+    fireEvent.click(within(menu).getByRole("menuitem", { name: "Close" }));
+    await waitFor(() => expect(error).toHaveBeenCalledWith(expect.stringMatching(/still running/)));
+    expect(tabs().getByRole("tab", { name: "dev" })).toBeInTheDocument();
+    expect(page.subPath()).toBe("proj_1/env_a/t1");
+  });
+
+  it("ACT-5: Close terminals from settled threads lists the selected environment's again, confirms once, and closes them", async () => {
+    const w = twoProjects({
+      threads: [
+        thread({ id: "thr_idle", title: "Release prep", status: "idle" }),
+        thread({ id: "thr_busy", title: "Working", status: "active" }),
+        thread({ id: "thr_other", title: "Elsewhere", status: "idle", environmentId: "env_b" }),
+      ],
+      terminals: [
+        terminal({ id: "mine", title: "mine", createdAt: 1 }),
+        terminal({ id: "busy", title: "busy", threadId: "thr_busy", createdAt: 2 }),
+        terminal({ id: "left", title: "left over", threadId: "thr_idle", createdAt: 3 }),
+        terminal({ id: "far", title: "far", threadId: "thr_other", environmentId: "env_b" }),
+      ],
+    });
+    const page = await mountPage(w, "proj_1/env_a/mine");
+    await screen.findByTestId("terminal-view");
+    // A second settled terminal appears before the cleanup is opened.
+    w.terminals.push(terminal({ id: "late", title: "late", threadId: "thr_idle", createdAt: 4 }));
+    const menu = await openMenu(bar().getByRole("button", { name: "More actions for mine" }));
+    fireEvent.click(
+      within(menu).getByRole("menuitem", { name: "Close terminals from settled threads…" }),
+    );
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog).toHaveTextContent("left over");
+    expect(dialog).toHaveTextContent("late");
+    expect(dialog).not.toHaveTextContent("busy");
+    expect(dialog).not.toHaveTextContent("far");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Close 2" }));
+    await waitFor(() => expect(page.sdk.terminals.close).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(tabNames()).toEqual(["mine", "busy"]));
+  });
+
+  it("ACT-5: the cleanup item is disabled when no thread terminal of the environment is settled", async () => {
+    const w = world({
+      threads: [thread({ id: "thr_busy", status: "active" })],
+      terminals: [terminal({ id: "t1", threadId: "thr_busy" })],
+    });
+    await mountPage(w, "proj_1/env_a/t1");
+    await screen.findByTestId("terminal-view");
+    const menu = await openMenu(bar().getByRole("button", { name: "More actions for t1" }));
+    expect(
+      within(menu).getByRole("menuitem", { name: "Close terminals from settled threads…" }),
+    ).toHaveAttribute("data-disabled");
+  });
+});
+
+describe("returning to the page", () => {
+  it("LIST-27, NAV-6: shows the last known rail and tabs at once, says so in the title bar, and never claims nothing runs", async () => {
+    const w = twoProjects({
+      threads: [thread({ id: "thr_1" })],
+      terminals: [
+        terminal({ id: "t1", title: "dev", createdAt: 1 }),
+        terminal({ id: "t2", title: "pnpm test", threadId: "thr_1", createdAt: 2 }),
+      ],
+    });
+    const page = await mountPage(w, "proj_1/env_a/t1");
+    await waitFor(() => expect(tabNames()).toEqual(["dev", "pnpm test"]));
+    await waitFor(() => expect(page.titleBar()).toHaveTextContent(/2 running$/));
+    await away(page);
+    w.terminals = [];
+    const release = hold(page.sdk.threads.list);
+    page.returnTo("proj_1/env_a/t1");
+    expect(tabNames()).toEqual(["dev", "pnpm test"]);
+    expect(railItems()).toEqual(["env_a"]);
+    expect(rail().queryByText(/Looking for terminals/)).toBeNull();
+    expect(page.titleBar()).toHaveTextContent("Last known · 2 running");
+    await sleep(30);
+    expect(screen.queryByText(/Nothing running/)).toBeNull();
+    release();
+    await waitFor(() => expect(page.titleBar()).not.toHaveTextContent("Last known"));
+  });
+
+  it("LIST-28, NAV-5, ACT-7: a selected terminal that went away meanwhile shows the gone notice and selects as after a close", async () => {
+    const w = world({
+      terminals: [
+        terminal({ id: "t1", title: "dev", createdAt: 1 }),
+        terminal({ id: "t2", title: "api", createdAt: 2 }),
+      ],
+    });
+    const page = await mountPage(w, "proj_1/env_a/t1");
+    await screen.findByTestId("terminal-view");
+    await away(page);
+    w.terminals = w.terminals.filter((t) => t.id !== "t1");
+    page.returnTo("proj_1/env_a/t1");
+    expect(await screen.findByText(/That terminal is gone/)).toBeInTheDocument();
+    await waitFor(() => expect(page.subPath()).toBe("proj_1/env_a/t2"));
+  });
+
+  it("LIST-28: on return, the selected terminal is checked first, then its environment, before other projects are listed", async () => {
+    const w = twoProjects({
+      terminals: [terminal({ id: "a1" }), terminal({ id: "c1", environmentId: "env_c" })],
+    });
+    const page = await mountPage(w, "proj_2/env_c/c1");
+    await screen.findByTestId("terminal-view");
+    await sleep(20);
+    await away(page);
+    page.sdk.terminals.get.mockClear();
+    page.sdk.terminals.list.mockClear();
+    page.sdk.threads.list.mockClear();
+    page.returnTo("proj_2/env_c/c1");
+    await waitFor(() =>
+      expect(page.sdk.threads.list.mock.calls.some(([a]) => a.projectId === "proj_1")).toBe(true),
+    );
+    const order = (fn: { mock: { invocationCallOrder: number[] } }, i: number) =>
+      fn.mock.invocationCallOrder[i] ?? Infinity;
+    const get = order(page.sdk.terminals.get, 0);
+    const ownC = page.sdk.terminals.list.mock.calls.findIndex(
+      ([a]) => a.scope.kind === "environment" && a.scope.environmentId === "env_c",
+    );
+    const otherScan = page.sdk.threads.list.mock.calls.findIndex(([a]) => a.projectId === "proj_1");
+    expect(page.sdk.terminals.get).toHaveBeenCalledWith({ terminalId: "c1" });
+    expect(get).toBeLessThan(order(page.sdk.terminals.list, ownC));
+    expect(order(page.sdk.terminals.list, ownC)).toBeLessThan(
+      order(page.sdk.threads.list, otherScan),
+    );
+  });
+
+  it("LIST-27: while bb's realtime connection is down, the lists are last known; when it is back they are confirmed again", async () => {
+    const w = world({ terminals: [terminal({ id: "t1" })] });
+    const page = await mountPage(w, "proj_1/env_a/t1");
+    await waitFor(() => expect(page.titleBar()).toHaveTextContent(/^main1 running$|1 running$/));
+    await page.slot.setRealtimeConnectionState("reconnecting");
+    await waitFor(() => expect(page.titleBar()).toHaveTextContent("Last known · 1 running"));
+    await page.slot.setRealtimeConnectionState("connected");
+    await waitFor(() => expect(page.titleBar()).not.toHaveTextContent("Last known"));
+  });
+
+  it("NAV-4: back from a page with no environment opens the environment the page last showed", async () => {
+    const w = twoProjects({
+      terminals: [terminal({ id: "a1" }), terminal({ id: "c1", environmentId: "env_c" })],
+    });
+    const page = await mountPage(w, "proj_2/env_c/c1", { projectId: null });
+    await screen.findByTestId("terminal-view");
+    await away(page);
+    page.returnTo("");
+    await waitFor(() => expect(page.subPath()).toBe("proj_2/env_c/c1"));
+  });
+});
+
+it("NAV-2: a link naming an environment under the wrong project opens it under its own", async () => {
+  const w = twoProjects({ terminals: [terminal({ id: "c1", environmentId: "env_c" })] });
+  const page = await mountPage(w, "proj_1/env_c");
+  await waitFor(() => expect(page.subPath()).toBe("proj_2/env_c/c1"));
+});
+
+it("NAV-2: an old link naming all environments opens as NAV-4 says", async () => {
+  const w = world({ terminals: [terminal({ id: "a1" })] });
+  const page = await mountPage(w, "proj_1/all");
+  await waitFor(() => expect(page.subPath()).toBe("proj_1/env_a/a1"));
+});
+
+it("NAV-5: a terminal not listed, but running elsewhere, gets a tab and the bar", async () => {
+  const w = world({
+    terminals: [terminal({ id: "t_far", title: "far", threadId: "thr_unknown" })],
+  });
+  await mountPage(w, "proj_1/env_a/t_far");
+  await screen.findByTestId("terminal-view");
+  expect(tabs().getByRole("tab", { name: "far" })).toHaveAttribute("aria-selected", "true");
+  expect(railItems()).toEqual(["env_a"]);
+  const menu = await openMenu(bar().getByRole("button", { name: "More actions for far" }));
+  fireEvent.click(within(menu).getByRole("menuitem", { name: "Rename" }));
+  fireEvent.change(await screen.findByRole("textbox", { name: "Terminal title" }), {
+    target: { value: "near" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Rename" }));
+  expect(await bar().findByRole("heading", { name: "near" })).toBeTruthy();
+});
+
+it("NAV-5: a dead link is resolved even when another environment cannot be listed", async () => {
+  const w = twoProjects({ terminals: [terminal({ id: "a1" })] });
+  const page = await mountPage(w, "proj_1/env_a/t_dead", undefined, (sdk) => {
+    const real = sdk.terminals.list.getMockImplementation();
+    sdk.terminals.list.mockImplementation(async (args) => {
+      if (args.scope.kind === "environment" && args.scope.environmentId === "env_b") {
+        throw new Error("host offline");
+      }
+      return real?.(args) as never;
+    });
+  });
+  expect(await screen.findByText(/That terminal is gone/)).toBeInTheDocument();
+  await waitFor(() => expect(page.subPath()).toBe("proj_1/env_a/a1"));
 });

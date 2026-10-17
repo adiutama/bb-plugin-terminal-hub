@@ -128,10 +128,11 @@ describe("actions", () => {
     await expect(closeTerminal(stubborn, "t2")).rejects.toBeInstanceOf(CloseFailedError);
   });
 
-  it("ACT-7: moves the selection to the next terminal, or to nothing", () => {
+  it("ACT-7: moves the selection to the tab on the right, else the left, else to nothing", () => {
     expect(nextSelection(["a", "b", "c"], "a")).toBe("b");
     expect(nextSelection(["a", "b", "c"], "b")).toBe("c");
-    expect(nextSelection(["a", "b", "c"], "c")).toBeNull();
+    expect(nextSelection(["a", "b", "c"], "c")).toBe("b");
     expect(nextSelection(["a"], "a")).toBeNull();
+    expect(nextSelection(["a"], "x")).toBeNull();
   });
 });
