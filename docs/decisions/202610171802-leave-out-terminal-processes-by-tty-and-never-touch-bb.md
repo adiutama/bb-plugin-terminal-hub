@@ -1,9 +1,9 @@
 # Leave out processes with a terminal, signal a group only when every member is known, and never touch bb's own processes
 
-- Status: accepted
+- Status: superseded
 - Date: 2026-10-17
 - Supersedes: 202610171646
-- Superseded by: none
+- Superseded by: 202610171823
 - Applies to: docs/specs/services.md, lib/services.ts, lib/processes.ts
 
 ## Context
