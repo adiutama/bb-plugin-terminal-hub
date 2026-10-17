@@ -37,7 +37,7 @@ useSdk().terminals ◄──► lib/terminal-transport.ts ◄──► lib/pump.
 | File | Role |
 | --- | --- |
 | `lib/inventory.ts` | Lists an environment's terminals and its threads' (archived included); groups them, and orders the tabs (LIST-12). |
-| `lib/hub-store.ts` | One project's data, one store per project kept for the app session: refresh cadence, last-known vs confirmed rows after a return, exited-row retention, server hints, home directories, actions. |
+| `lib/hub-store.ts` | One project's data, one store per project kept for the app session: environment names (LIST-34), refresh cadence, last-known vs confirmed rows after a return, exited-row retention, server hints, home directories, actions. |
 | `lib/hub.ts` | Every project's store together: attaches them all while the page is shown (the selected project first), the project list, and the snapshot the page reads. |
 | `lib/rail.ts` | What the rail lists (LIST-33), what "Find environment" leaves (LIST-42), the environment the page selects on its own (NAV-4, LIST-37). |
 | `lib/page-memory.ts` | Where the user was until bb reloads: the environment last shown, each environment's last tab, folded projects, the rail's scroll anchor, the find text. |
