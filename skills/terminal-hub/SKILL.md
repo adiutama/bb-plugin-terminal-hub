@@ -8,7 +8,7 @@ description: Start and reuse long-running processes (dev servers, watchers, log 
 Terminal Hub is a Terminals page listing every terminal in a checkout or
 worktree (an environment). Environment-scoped terminals are the shared space it
 manages: every thread in the environment sees them, and they outlive any one
-thread. Its Services page lists the servers running in an environment outside
+thread. Its Services view lists the servers running in an environment outside
 bb terminals, such as ones started detached with `nohup` or a database's own
 daemon.
 
