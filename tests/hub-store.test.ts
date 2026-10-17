@@ -740,7 +740,7 @@ describe("hub store", () => {
     expect(sdk.terminals.get).not.toHaveBeenCalled();
   });
 
-  it("ACT-5: listing the environment again reports whether every part of it succeeded", async () => {
+  it("LIST-28: listing the selected environment in full reports whether every part of it succeeded", async () => {
     const w = world({ terminals: [terminal({ id: "a1" })] });
     const { sdk, store } = open(w, "env_a");
     await vi.advanceTimersByTimeAsync(0);

@@ -4,7 +4,6 @@ import type { PluginNavPanelProps } from "@get-bb/plugin-sdk/app";
 import { loadPluginApp, type RenderedSlot, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import { act, fireEvent, screen } from "@testing-library/react";
 import type { ComponentType } from "react";
-import { HeaderCount } from "../../components/header-count";
 import { fakeSdk, type World } from "./fake-bb";
 
 const followers: ReturnType<typeof setInterval>[] = [];
@@ -29,12 +28,10 @@ export interface MountedPage {
   navigations(): { subPath: string; replace: boolean }[];
   /** Shows another URL, as Back or a pasted link would. */
   goTo(subPath: string): void;
-  /** Leaves the page, as opening a thread does; the title bar goes with it. */
+  /** Leaves the page, as opening a thread does. */
   leave(): void;
   /** Comes back to the page at `subPath` (the rail opens it at its root, ""). */
   returnTo(subPath: string): void;
-  /** The page's title bar (NAV-6). */
-  titleBar(): HTMLElement;
 }
 
 export async function mountPage(
@@ -48,18 +45,8 @@ export async function mountPage(
   const panel = app.navPanels[0];
   if (!panel) throw new Error("no navPanel");
   const Page = panel.component as ComponentType<PluginNavPanelProps>;
-  // bb shows the title bar's content with the page, and both go when it is left.
   const Shell = ({ subPath, open = true }: { subPath: string; open?: boolean }) =>
-    open ? (
-      <>
-        <div data-testid="title-bar">
-          <HeaderCount subPath={subPath} />
-        </div>
-        <Page subPath={subPath} />
-      </>
-    ) : (
-      <div data-testid="elsewhere" />
-    );
+    open ? <Page subPath={subPath} /> : <div data-testid="elsewhere" />;
   const bb = fakeSdk(w);
   prepare?.(bb.sdk);
   let current = subPath;
@@ -109,7 +96,6 @@ export async function mountPage(
       current = subPath;
       act(() => slot.lifecycle.rerender(<Shell subPath={subPath} />));
     },
-    titleBar: () => slot.getByTestId("title-bar"),
   };
 }
 
