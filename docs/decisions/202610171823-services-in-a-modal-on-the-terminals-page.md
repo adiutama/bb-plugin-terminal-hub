@@ -4,7 +4,7 @@
 - Date: 2026-10-17
 - Supersedes: 202610171802
 - Superseded by: none
-- Applies to: docs/specs/services.md, docs/specs/session-list.md, app.tsx, components/terminals-page.tsx, components/environment-rail.tsx, components/services-page.tsx, README.md, docs/overview.md, docs/architecture.md
+- Applies to: docs/specs/services.md, docs/specs/session-list.md, app.tsx, components/terminals-page.tsx, components/services-page.tsx, README.md, docs/overview.md, docs/architecture.md
 
 ## Context
 
@@ -16,7 +16,9 @@ be reached from its one page. They suggested a modal.
 Options considered:
 
 - **A modal opened from the Terminals page.** Adopted, the user's suggestion:
-  one rail entry, and the table-and-drawer layout stays as built.
+  one rail entry, and the table-and-drawer layout stays as built. The user
+  placed its button in the title bar, beside the close button, rather than in
+  the page's own rail.
 - **A "Services" entry in the page's own rail, showing the table in the main
   area.** Not chosen: mixes a cross-environment table into a rail of
   environments.
@@ -28,9 +30,10 @@ Options considered:
 ADR 202610171802 stands, except:
 
 1. **No second `navPanel`.** The plugin registers only "Terminals".
-2. **A "Services" button in the rail's header**, beside "Find environment"
-   and its `+`, shows the number of listed services when it is above zero.
-   It opens a modal.
+2. **A "Services" button in the page's title bar**, on its right beside bb's
+   close button, rendered through the `navPanel`'s `headerContent` slot. It
+   shows the number of listed services when it is above zero, and opens a
+   modal. The rail is unchanged.
 3. **The modal holds the Services table and log drawer** as ADR 202610171641
    describes them (header with title, find field and running count; grouped
    table; drawer at the bottom of the modal). It is large, closes with × or
@@ -47,6 +50,8 @@ ADR 202610171802 stands, except:
 - One entry in bb's rail; services are a click away from any terminal.
 - The modal covers the terminal while open; it is for checking and stopping,
   not for watching a log beside a shell.
-- Specs: SVC-1, SVC-10, SVC-15 and SVC-21 change; a rule for the rail
-  button's count. The Terminals rail header gains the button (session-list).
+- `headerContent` mounts separately from the page component, so the button
+  and the page share the modal's open state through a module-level store;
+  a throwing `headerContent` is hidden by bb without breaking the title bar.
+- Specs: SVC-1, SVC-10, SVC-15 and SVC-21 change; SVC-23 is new.
   `bb terminal-hub services` and the stopping rules are unchanged.
