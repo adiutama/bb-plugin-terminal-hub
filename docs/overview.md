@@ -13,24 +13,20 @@ leaves the right sidebar untouched.
 ## Layout
 
 ```
-┌ rail ┐┌ Terminals ───────────────────────────────────────────┐
-│  ⌂   ││ [ project      ▾ ]  │                                 │
-│  …   ││ [ environment  ▾ ]  │                                 │
-│ >_ ◀ ││ ─────────────────── │        Ghostty terminal view    │
-│      ││ Environment         │        (selected session)       │
-│      ││   ● dev server :3000│                                 │
-│      ││ From threads        │                                 │
-│      ││   ● pnpm test  ⚠    │                                 │
-│      ││ [ + New terminal ]  │                                 │
-└──────┘└─────────────────────┴─────────────────────────────────┘
+┌ rail ┐┌ Terminals   / kai-platform / billing-v2 · 3 running ─────────────┐
+│  ⌂   ││ Find environment  / ││ api :8080 │ build exit 1 │ pnpm test │ +   │
+│  …   ││ ⌄ kai-platform       ││ api              localhost:8080 ↗  ⟳  ⋯   │
+│ >_ ◀ ││   ⑂ main          2  ││ kai-platform/billing-v2 from Ship billing │
+│      ││   ⑂ billing-v2    3  ││───────────────────────────────────────────│
+│      ││ ⌄ terminal-hub       ││        Ghostty terminal view              │
+│      ││   ⑂ main          2  ││        (selected terminal)                │
+└──────┘└──────────────────────┴┴───────────────────────────────────────────┘
 ```
 
-- A project picker, then an environment picker, as in the
-  [Files plugin](https://github.com/abdoutelb/bb-plugin-files-editor), which
-  registers a `navPanel` with its own rail entry. Possibly an "All environments"
-  option.
-- The session list for the selected environment.
-- The main area renders the selected session with Ghostty.
+- A rail of every project's environments that have terminals, grouped by
+  project as bb's sidebar does (ADR 202610171354).
+- The selected environment's terminals as tabs; the main area renders the
+  selected one with Ghostty, under a bar with its details and actions.
 - **Deep links**: the route carries project, environment, and terminal, so
   reload and back/forward return to the same shell.
 
@@ -48,7 +44,7 @@ The name is engine-neutral on purpose, so the renderer can change later.
 ## Glossary
 
 - **Environment**: a project checkout or worktree. Terminals are listed per
-  environment.
+  environment, and one environment is always selected.
 - **Scope**: what a terminal belongs to in the SDK: a `thread`, an
   `environment`, or a `host_path`.
 - **Hub terminal**: a terminal the hub created, at environment scope. Shared by
