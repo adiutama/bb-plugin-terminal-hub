@@ -1455,3 +1455,69 @@ it("LIST-34, VIEW-9: same-named environments of a project are told apart by the 
     "feature/review · review-pr-Pn4Tl8",
   ]);
 });
+
+describe("folder checks in New terminal in…", () => {
+  it("LIST-48, LIST-41: the project menu checks folders of environments without terminals, leaves out missing ones, keeps failed checks, and shows progress", async () => {
+    const w = twoProjects({
+      environments: [
+        ...twoProjects().environments,
+        environment("env_gone", "proj_1", { name: "gone", path: "/tmp/T/gone/repo" }),
+        environment("env_locked", "proj_1", { name: "locked", path: "/locked" }),
+        environment("env_slow", "proj_1", { name: "slow", path: "/slow" }),
+      ],
+      missingFolders: ["/tmp/T/gone/repo"],
+      unreadableFolders: ["/locked"],
+      terminals: [terminal({ id: "a1" })],
+    });
+    let releaseSlow: () => void = () => {};
+    const page = await mountPage(w, "proj_1/env_a/a1", undefined, (sdk) => {
+      const real = sdk.hosts.directory.getMockImplementation();
+      const { promise, release } = gate();
+      releaseSlow = release;
+      sdk.hosts.directory.mockImplementation(async (args) => {
+        if (args.path === "/slow") await promise;
+        return real?.(args) as never;
+      });
+    });
+    await waitFor(() => expect(railItems()).toEqual(["env_a"]));
+    const items = (menu: HTMLElement) =>
+      within(menu)
+        .queryAllByRole("menuitem")
+        .map((item) => item.textContent);
+    let menu = await openMenu(rail().getByRole("button", { name: "New terminal in Project one…" }));
+    await waitFor(() => expect(items(menu)).toEqual(["main", "bb/feature-x", "locked"]));
+    expect(within(menu).getByText("Checking folders…")).toBeInTheDocument();
+    releaseSlow();
+    await waitFor(() => expect(items(menu)).toEqual(["main", "bb/feature-x", "locked", "slow"]));
+    expect(within(menu).queryByText("Checking folders…")).toBeNull();
+    // The environment with terminals is never checked.
+    const paths = page.sdk.hosts.directory.mock.calls.map(([args]) => args.path);
+    expect(paths).not.toContain("/Users/me/repo");
+    expect(paths).toEqual(
+      expect.arrayContaining(["/Users/me/wt/feature-x", "/tmp/T/gone/repo", "/locked", "/slow"]),
+    );
+
+    // Kept until bb reloads: opening again asks nothing.
+    fireEvent.keyDown(menu, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
+    const asked = page.sdk.hosts.directory.mock.calls.length;
+    menu = await openMenu(rail().getByRole("button", { name: "New terminal in Project one…" }));
+    expect(items(menu)).toEqual(["main", "bb/feature-x", "locked", "slow"]);
+    expect(page.sdk.hosts.directory.mock.calls.length).toBe(asked);
+  });
+
+  it("LIST-48, LIST-25: the empty page's menu leaves out environments whose folder is missing", async () => {
+    const w = twoProjects({ missingFolders: ["/Users/me/wt/feature-x"] });
+    await mountPage(w, "", { projectId: null });
+    await screen.findByText("Nothing running.");
+    const menu = await openMenu(screen.getByRole("button", { name: "New terminal in…" }));
+    await waitFor(() =>
+      expect(
+        within(menu)
+          .getAllByRole("menuitem")
+          .map((item) => item.textContent),
+      ).toEqual(["main", "trunk"]),
+    );
+    expect(within(menu).queryByText("Checking folders…")).toBeNull();
+  });
+});

@@ -26,6 +26,10 @@ export interface World {
   terminals: TerminalSession[];
   homes: Record<string, string>;
   output: Record<string, string>;
+  /** Folders that no longer exist on their host (`hosts.directory` says ENOENT). */
+  missingFolders?: string[];
+  /** Folders the host cannot read (`hosts.directory` says EACCES). */
+  unreadableFolders?: string[];
 }
 
 let seq = 0;
@@ -234,10 +238,26 @@ export function fakeSdk(w: World) {
     },
     projects: { list: vi.fn(async () => w.projects) },
     hosts: {
-      directory: vi.fn(async ({ hostId }: { hostId: string }) => {
+      directory: vi.fn(async ({ hostId, path }: { hostId: string; path?: string }) => {
         const home = w.homes[hostId];
         if (!home) throw new Error("Host offline");
-        return { directory: home, parent: null, entries: [] };
+        // As bb 0.46.1 answers (docs/findings/2026-10-17-files-list-missing-path.md).
+        if (path !== undefined && w.missingFolders?.includes(path)) {
+          throw Object.assign(
+            new Error(`HTTP 502: ENOENT: no such file or directory, stat '${path}'`),
+            {
+              status: 502,
+              code: "ENOENT",
+            },
+          );
+        }
+        if (path !== undefined && w.unreadableFolders?.includes(path)) {
+          throw Object.assign(new Error(`HTTP 502: EACCES: permission denied, scandir '${path}'`), {
+            status: 502,
+            code: "EACCES",
+          });
+        }
+        return { directory: path ?? home, parent: null, entries: [] };
       }),
     },
     subscribe: vi.fn((args: { event: string; callback: (event: any) => void }) => {
