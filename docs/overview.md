@@ -30,6 +30,20 @@ leaves the right sidebar untouched.
 - **Deep links**: the route carries project, environment, and terminal, so
   reload and back/forward return to the same shell.
 
+A second page, **Services**, lists servers running in environments outside bb
+terminals (ADR 202610171646): one table grouped by environment, with the
+selected process's log in a drawer below it.
+
+```
+┌ Services ─────────────────────────── [Find…        ]  3 running ┐
+│ PORT    PROCESS                 STARTED BY      PID     UP       │
+│ kai-platform › thr_6z6iitf6ba-1                                  │
+│ :55401  node apps/api/…         Map all pages   48345   2h ↗ ⧉ ■ │
+├──────────────────────────────────────────────────────────────────┤
+│ log tail of the selected row                                   ✕ │
+└──────────────────────────────────────────────────────────────────┘
+```
+
 ## Names
 
 | Thing | Name |
@@ -37,7 +51,7 @@ leaves the right sidebar untouched.
 | Repo and package | `bb-plugin-terminal-hub` |
 | Plugin id and route | `terminal-hub`, `/plugins/terminal-hub/...` |
 | Display name | Terminal Hub |
-| Rail label and page header | Terminals |
+| Rail labels and page headers | Terminals, Services |
 
 The name is engine-neutral on purpose, so the renderer can change later.
 
@@ -53,3 +67,6 @@ The name is engine-neutral on purpose, so the renderer can change later.
   agent, at thread scope.
 - **Settled thread**: a thread that has finished its work (no turn running).
 - **Stale terminal**: a thread terminal still running after its thread settled.
+- **Service**: a process listening on a TCP port that belongs to an
+  environment by its `BB_ENVIRONMENT_ID` or its folder, and is not running in a
+  bb terminal.

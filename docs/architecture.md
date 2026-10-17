@@ -7,13 +7,16 @@ How the code is laid out and how data moves through it. The behaviour lives in
 
 | File | Runs in | Does |
 | --- | --- | --- |
-| `server.ts` | bb server | Serves `ghostty-vt.wasm` to the page; registers the `bb terminal-hub` CLI. |
-| `app.tsx` | bb app (browser) | Registers the Terminals `navPanel`. |
+| `server.ts` | bb server | Serves `ghostty-vt.wasm` to the page; scans and signals processes for the Services page over plugin RPC; registers the `bb terminal-hub` CLI. |
+| `app.tsx` | bb app (browser) | Registers the Terminals and Services `navPanel`s. |
 | `skills/terminal-hub/SKILL.md` | agent threads | Tells agents how to run long-lived processes. |
 
-The page talks to bb's terminals, threads, environments, and projects APIs
-directly through `useSdk()`. There is no plugin RPC: the hub stores nothing
-(ADR 202610101645), so a server hop would only add latency to output polling.
+The Terminals page talks to bb's terminals, threads, environments, and
+projects APIs directly through `useSdk()`, with no plugin RPC: the hub stores
+nothing (ADR 202610101645), so a server hop would only add latency to output
+polling. The Services page has to look at processes on the machine running
+bb, which only the server entry can do, so it asks the server over plugin RPC
+(ADR 202610171646).
 
 ## Data flow
 
@@ -77,6 +80,36 @@ the other stores wait for it (at most 4 s), then fetch the threads marked
 while away, then list in full. Every write to a list carries the sequence
 number of the request (or action) that produced it, so a late answer never
 replaces newer data.
+
+## Services page and CLI
+
+```
+useRpc().call ──► server.ts (bb.rpc) ──► lib/services.ts ──► lib/processes.ts ──► ProcessHost
+                  bb terminal-hub services ─┘   (environments,      (lsof, ps output)   (lib/process-host.ts:
+                                                 threads, stops)                        execFile, fs, kill)
+```
+
+- `lib/processes.ts` reads `lsof -iTCP -sTCP:LISTEN` for listeners, `ps` for
+  start time and process group, `lsof -d cwd,1` for working folder and log
+  file, and `ps eww` (macOS) or `/proc/<pid>/environ` (Linux) for the bb
+  variables. Everything goes through a `ProcessHost`, so tests answer with
+  recorded output and never touch a real process.
+- `lib/services.ts` keeps the latest scan: only PIDs it listed can be signalled
+  (SVC-13), and each signal re-checks the PID's start time first (SVC-8). It
+  names and orders environments with the Terminals page's helpers (LIST-33,
+  LIST-34) and treats `system.config().primaryHostId` as this machine (SVC-11).
+- The page scans every 5 s while visible and reads the selected log every 2 s
+  while the drawer shows it.
+
+| File | Role |
+| --- | --- |
+| `lib/services-contract.ts` | The RPC methods (`services.list`, `.plan`, `.stop`, `.log`) and their schemas; the page imports only its types. |
+| `lib/processes.ts` | `ProcessHost`, and parsing `lsof`/`ps` output into listeners with ports, folder, log, and bb variables. |
+| `lib/process-host.ts` | The real `ProcessHost`: `execFile` with argument arrays, `LC_ALL=C`, and the system folders on the lookup path. |
+| `lib/services.ts` | Which listeners are listed and under which environment (SVC-2, SVC-3), thread titles, stop planning and signalling (SVC-19), log tails. |
+| `lib/services-view.ts` | The find field's filter and the running count (SVC-15). |
+| `lib/services-cli.ts` | `bb terminal-hub services`: text and JSON for one environment. |
+| `components/services-page.tsx` | The table, its actions, the stop confirmation, and the log drawer. |
 
 ## Terminal engine
 
