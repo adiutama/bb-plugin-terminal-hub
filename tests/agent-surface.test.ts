@@ -1,13 +1,21 @@
 import { readFile } from "node:fs/promises";
 import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { groupEnvironment, loadEnvironment, orderedRows } from "../lib/inventory";
 import plugin from "../server";
 import { fakeSdk, terminal, thread, type World, world } from "./fixtures/fake-bb";
+import { STARTED_AT } from "./fixtures/fake-host";
+import {
+  disposeServers,
+  servicesMachine,
+  servicesWorld,
+  startServer,
+} from "./fixtures/services-world";
 
 const hosts: { dispose(): Promise<void> }[] = [];
 afterEach(async () => {
   for (const host of hosts.splice(0)) await host.dispose();
+  await disposeServers();
 });
 
 async function cli(w: World) {
@@ -134,6 +142,80 @@ describe("agent surface", () => {
       scope: "thread",
       serverHint: null,
       thread: { id: "thr_tests", title: "Fix flaky tests", state: "idle", stale: true },
+    });
+  });
+});
+
+describe("agent surface: services", () => {
+  it("AGENT-9: the skill says to run services as well as list before starting a server, and reuse a listed one", async () => {
+    const skill = await readFile("skills/terminal-hub/SKILL.md", "utf8");
+    const section = skill.slice(
+      skill.indexOf("## Before starting"),
+      skill.indexOf("## Starting one"),
+    );
+    expect(section).toContain("bb terminal-hub list");
+    expect(section).toContain("bb terminal-hub services");
+    expect(section).toMatch(
+      /If `services` lists a server with the command or port you need, reuse it/,
+    );
+    expect(section).toMatch(/Do not start a\s+duplicate/);
+  });
+
+  it("AGENT-7: prints the processes the Services page lists for the environment, with ports, PID, command line, thread, and log path", async () => {
+    vi.setSystemTime(STARTED_AT + 2 * 3_600_000);
+    const server = await startServer(servicesWorld(), servicesMachine());
+    const page = await server.call("services.list");
+    const result = await server.runCli(["services", "--environment", "env_wt"]);
+    expect(result.exitCode).toBe(0);
+    const lines = (result.stdout ?? "").split("\n");
+    expect(lines[0]).toBe("Services in environment env_wt (kai-platform › bb/map-all-page-urls)");
+    expect(result.stdout).toContain(
+      "  :55400  pid 33438  up 2h  /opt/homebrew/bin/postgres -D /Users/me/.agents/pg -p 55400",
+    );
+    expect(result.stdout).toContain('    started by thread "Map all page URLs" (thr_map)');
+    expect(result.stdout).toContain("    log /Users/me/.agents/pg.log");
+    const listed = lines.flatMap((line) => line.match(/pid (\d+)/)?.[1] ?? []).map(Number);
+    const shown = page.groups
+      .find((g: any) => g.environmentId === "env_wt")
+      .services.map((s: any) => s.pid);
+    expect(listed).toEqual(shown);
+    vi.useRealTimers();
+  });
+
+  it("AGENT-7: chooses the environment as AGENT-4 does, and says when it has none or is not checked", async () => {
+    const server = await startServer(servicesWorld(), servicesMachine());
+    const own = await server.runCli(["services"], { threadId: "thr_map" });
+    expect(own.stdout).toContain("Services in environment env_wt");
+    const main = await server.runCli(["services", "--environment", "env_a"], {
+      threadId: "thr_map",
+    });
+    expect(main.stdout).toContain("Services in environment env_a");
+    expect(main.stdout).toContain("(none running)");
+    const remote = await server.runCli(["services", "--environment", "env_remote"]);
+    expect(remote.stdout).toContain("Not checked: the environment is on another host.");
+    const none = await server.runCli(["services"]);
+    expect(none.exitCode).not.toBe(0);
+    expect(none.stderr).toContain("--environment");
+  });
+
+  it("AGENT-8: --json prints each process's pid, ports, command, startedAt, threadId, logPath, and environmentId", async () => {
+    const server = await startServer(servicesWorld(), servicesMachine());
+    const result = await server.runCli(["services", "--environment", "env_b", "--json"]);
+    expect(JSON.parse(result.stdout ?? "")).toEqual({
+      environmentId: "env_b",
+      available: true,
+      checked: true,
+      services: [
+        {
+          pid: 51002,
+          ports: [5173, 24678],
+          command: "node node_modules/.bin/vite",
+          startedAt: Date.parse("Sat Oct 17 23:40:00 2026"),
+          threadId: null,
+          logPath: null,
+          environmentId: "env_b",
+        },
+      ],
     });
   });
 });

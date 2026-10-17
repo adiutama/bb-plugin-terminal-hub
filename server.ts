@@ -11,6 +11,7 @@ import { formatText, listEnvironment, resolveEnvironment, toJson } from "./lib/c
 import { nodeProcessHost } from "./lib/process-host";
 import type { ProcessHost } from "./lib/processes";
 import { Services } from "./lib/services";
+import { formatServicesText, servicesIn, servicesJson } from "./lib/services-cli";
 import { servicesContract } from "./lib/services-contract";
 
 const environmentOption = {
@@ -53,7 +54,8 @@ export async function createPlugin(bb: BbPluginApi, host: ProcessHost) {
   bb.cli.register(
     defineCli({
       name: "terminal-hub",
-      summary: "List the terminals running in an environment, as the Terminals page shows them",
+      summary:
+        "List the terminals and servers running in an environment, as the Terminals and Services pages show them",
       commands: {
         list: cliCommand({
           summary: "List an environment's terminals, grouped by owner, with server hints",
@@ -81,6 +83,35 @@ export async function createPlugin(bb: BbPluginApi, host: ProcessHost) {
               stdout: input.options.json
                 ? `${JSON.stringify(toJson(listing), null, 2)}\n`
                 : formatText(listing, Date.now()),
+            };
+          },
+        }),
+        services: cliCommand({
+          summary: "List the servers running in an environment outside bb terminals",
+          description:
+            "Shows the processes the Services page lists for the environment: each listening process with its ports, PID, command line, starting thread, and log file. Run it with `list` before starting a server, and reuse a listed one instead of starting another.",
+          options: {
+            environment: environmentOption,
+            json: { type: "boolean", description: "Print machine-readable JSON" },
+          },
+          async run(input, ctx) {
+            const environmentId = await resolveEnvironment(
+              bb.sdk,
+              input.options.environment,
+              ctx.threadId,
+            );
+            if (!environmentId) {
+              throw new PluginCliError("no environment to list", {
+                code: "environment_required",
+                hint: "Pass --environment <id>; `bb environment list` shows the ids.",
+              });
+            }
+            const listing = servicesIn(await services.list(), environmentId);
+            return {
+              exitCode: 0,
+              stdout: input.options.json
+                ? `${JSON.stringify(servicesJson(listing), null, 2)}\n`
+                : formatServicesText(listing, Date.now()),
             };
           },
         }),

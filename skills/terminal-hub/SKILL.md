@@ -8,21 +8,29 @@ description: Start and reuse long-running processes (dev servers, watchers, log 
 Terminal Hub is a Terminals page listing every terminal in a checkout or
 worktree (an environment). Environment-scoped terminals are the shared space it
 manages: every thread in the environment sees them, and they outlive any one
-thread.
+thread. Its Services page lists the servers running in an environment outside
+bb terminals, such as ones started detached with `nohup` or a database's own
+daemon.
 
 ## Before starting a long-running process
 
-1. See what is already running:
+1. See what is already running, in terminals and outside them:
 
    ```sh
-   bb terminal-hub list            # this thread's environment
-   bb terminal-hub list --json     # id, title, status, scope, thread, serverHint
+   bb terminal-hub list              # this thread's environment's terminals
+   bb terminal-hub list --json       # id, title, status, scope, thread, serverHint
+   bb terminal-hub services          # servers listening here outside bb terminals
+   bb terminal-hub services --json   # pid, ports, command, startedAt, threadId, logPath
    ```
 
 2. If a terminal already runs the same thing (same command or title, or a
    `serverHint` on the port you need), reuse it: read it with
    `bb terminal output <id>`, send input with `bb terminal send <id> --text … --enter`,
    or `bb terminal restart <id>` for a fresh shell. Do not start a duplicate.
+
+3. If `services` lists a server with the command or port you need, reuse it:
+   it is already running, and its log is at `logPath`. Do not start a
+   duplicate on another port.
 
 ## Starting one
 
