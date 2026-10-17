@@ -1,5 +1,5 @@
-// The selected environment's terminals as tabs, and the `+` that starts a
-// shell there (LIST-12, LIST-38 to LIST-40).
+// The selected environment's terminals as tabs, each with its ×, and the `+`
+// that starts a shell there (LIST-12, LIST-38 to LIST-40, LIST-46).
 import { type KeyboardEvent, useEffect, useRef } from "react";
 import { BAND_CLASS, SIDEBAR_TONE_CLASS } from "@/components/environment-rail";
 import { Icon } from "@/components/ui/icon";
@@ -19,6 +19,7 @@ export function TerminalTabs({
   environmentName,
   creating,
   onSelect,
+  onClose,
   onCreate,
 }: {
   rows: readonly HubRow[];
@@ -27,6 +28,8 @@ export function TerminalTabs({
   environmentName: string;
   creating: boolean;
   onSelect: (terminalId: string) => void;
+  /** LIST-46: close a running terminal, dismiss an ended one. */
+  onClose: (row: HubRow) => void;
   onCreate: () => void;
 }) {
   const stripRef = useRef<HTMLDivElement>(null);
@@ -74,37 +77,59 @@ export function TerminalTabs({
           const hint = running ? hints.get(terminal.id) : undefined;
           const title = terminal.title || "Terminal";
           return (
-            <button
+            <div
               key={terminal.id}
-              type="button"
-              role="tab"
-              id={`terminal-tab-${terminal.id}`}
-              data-terminal-id={terminal.id}
-              aria-selected={selected}
-              tabIndex={selected || (selectedId === null && row === rows[0]) ? 0 : -1}
-              title={title}
-              onClick={() => {
-                if (!selected) onSelect(terminal.id);
-              }}
+              role="presentation"
               className={cn(
-                "relative flex max-w-64 shrink-0 items-center gap-2 whitespace-nowrap border-r border-foreground/6 px-3.5 text-[13px] outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring",
+                "group relative flex max-w-64 shrink-0 items-center border-r border-foreground/6",
                 selected
                   ? "bg-background text-foreground after:absolute after:inset-x-0 after:-bottom-px after:h-px after:bg-background"
                   : "text-muted-foreground hover:text-foreground",
                 !running && "text-muted-foreground/60",
               )}
             >
-              <span className="min-w-0 truncate">{title}</span>
-              {!running ? (
-                <span data-tab-exit="" className="font-mono text-[11.5px]">
-                  {exitLabel(terminal.exitCode)}
-                </span>
-              ) : hint ? (
-                <span data-tab-hint="" className="font-mono text-[11.5px] text-muted-foreground">
-                  {hint.label}
-                </span>
-              ) : null}
-            </button>
+              <button
+                type="button"
+                role="tab"
+                id={`terminal-tab-${terminal.id}`}
+                data-terminal-id={terminal.id}
+                aria-selected={selected}
+                tabIndex={selected || (selectedId === null && row === rows[0]) ? 0 : -1}
+                title={title}
+                onClick={() => {
+                  if (!selected) onSelect(terminal.id);
+                }}
+                className="flex h-full min-w-0 items-center gap-2 whitespace-nowrap py-0 pl-3.5 pr-1 text-[13px] outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring"
+              >
+                <span className="min-w-0 truncate">{title}</span>
+                {!running ? (
+                  <span data-tab-exit="" className="font-mono text-[11.5px]">
+                    {exitLabel(terminal.exitCode)}
+                  </span>
+                ) : hint ? (
+                  <span data-tab-hint="" className="font-mono text-[11.5px] text-muted-foreground">
+                    {hint.label}
+                  </span>
+                ) : null}
+              </button>
+              {/* LIST-46: hidden by opacity only, so showing it moves nothing. */}
+              <button
+                type="button"
+                tabIndex={-1}
+                aria-label={`${running ? "Close" : "Dismiss"} ${title}`}
+                title={running ? "Close" : "Dismiss"}
+                data-tab-close=""
+                onClick={() => onClose(row)}
+                className={cn(
+                  "mr-1.5 grid size-5 shrink-0 place-items-center rounded text-muted-foreground transition-opacity duration-150 hover:bg-foreground/8 hover:text-foreground motion-reduce:transition-none pointer-coarse:size-8 pointer-coarse:opacity-100",
+                  selected
+                    ? "opacity-100"
+                    : "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100",
+                )}
+              >
+                <Icon name="X" className="size-3" aria-hidden="true" />
+              </button>
+            </div>
           );
         })}
       </div>

@@ -88,3 +88,40 @@ export function isFindShortcut(event: KeyLike): boolean {
   const target = event.target;
   return !(target instanceof Element && target.closest(KEEPS_SLASH));
 }
+
+/** LIST-47: the page's own shortcuts. */
+export type PageShortcut = "new" | "close" | "find";
+
+const SHORTCUTS: Record<string, PageShortcut> = { t: "new", w: "close", p: "find" };
+
+/** Where a dialog or a menu owns the keys (LIST-47). */
+const OVERLAY = '[role="dialog"], [role="alertdialog"], [role="menu"], [role="listbox"]';
+
+function isMac(): boolean {
+  const nav = typeof navigator === "undefined" ? null : navigator;
+  return /Mac|iPhone|iPad|iPod/.test(nav?.platform || nav?.userAgent || "");
+}
+
+/**
+ * LIST-47: Mod+T, Mod+W or Mod+P while focus is in the page (`root`), the
+ * terminal view included, or nowhere, and no dialog or menu is open. `Mod` is
+ * Cmd on macOS and Ctrl elsewhere; no other modifier may be held.
+ */
+export function pageShortcut(
+  event: Pick<
+    globalThis.KeyboardEvent,
+    "key" | "metaKey" | "ctrlKey" | "altKey" | "shiftKey" | "isComposing" | "defaultPrevented"
+  >,
+  root: HTMLElement | null,
+  mac: boolean = isMac(),
+): PageShortcut | null {
+  if (root === null || event.isComposing || event.altKey || event.shiftKey) return null;
+  const mod = mac ? event.metaKey && !event.ctrlKey : event.ctrlKey && !event.metaKey;
+  if (!mod) return null;
+  const shortcut = SHORTCUTS[event.key.toLowerCase()];
+  if (!shortcut) return null;
+  const active = document.activeElement;
+  if (active && active !== document.body && !root.contains(active)) return null;
+  if (document.querySelector(OVERLAY)) return null;
+  return shortcut;
+}

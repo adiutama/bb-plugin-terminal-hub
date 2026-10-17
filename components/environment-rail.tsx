@@ -241,6 +241,16 @@ export function EnvironmentRail({
           </kbd>
         ) : null}
       </label>
+      {/* LIST-27: what is shown is kept from before a return, until confirmed. */}
+      {snapshot.lastKnown ? (
+        <p
+          role="status"
+          data-rail-freshness=""
+          className="shrink-0 border-b border-foreground/8 px-4 py-1.5 text-[12px] text-muted-foreground"
+        >
+          {snapshot.reconnecting ? "Reconnecting…" : "Updating…"}
+        </p>
+      ) : null}
       <div ref={scrollerRef} className="min-h-0 flex-1 overflow-y-auto px-2 pb-6 pt-1">
         {progress ? (
           <p role="status" className="px-2 pt-2 text-[12.5px] text-muted-foreground">
