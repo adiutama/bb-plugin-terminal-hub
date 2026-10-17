@@ -1,9 +1,9 @@
 # Offer bulk cleanup of settled threads' terminals
 
-- Status: accepted
+- Status: superseded
 - Date: 2026-10-10
 - Supersedes: none
-- Superseded by: none
+- Superseded by: 202610171551
 - Applies to: docs/specs/actions.md (planned)
 
 ## Context

@@ -13,7 +13,7 @@ leaves the right sidebar untouched.
 ## Layout
 
 ```
-┌ rail ┐┌ Terminals   / kai-platform / billing-v2 · 3 running ─────────────┐
+┌ rail ┐┌ Terminals ───────────────────────────────────────────────────────┐
 │  ⌂   ││ Find environment  / ││ api :8080 │ build exit 1 │ pnpm test │ +   │
 │  …   ││ ⌄ kai-platform       ││ api              localhost:8080 ↗  ⟳  ⋯   │
 │ >_ ◀ ││   ⑂ main          2  ││ kai-platform/billing-v2 from Ship billing │
