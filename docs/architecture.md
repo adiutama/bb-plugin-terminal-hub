@@ -89,11 +89,18 @@ useRpc().call ──► server.ts (bb.rpc) ──► lib/services.ts ──► l
                                                  threads, stops)                        execFile, fs, kill)
 ```
 
-- `lib/processes.ts` reads `lsof -iTCP -sTCP:LISTEN` for listeners, `ps` for
-  start time and process group, `lsof -d cwd,1` for working folder and log
+- `lib/processes.ts` reads `lsof -iTCP -sTCP:LISTEN` for listeners, `ps -A`
+  for parent, process group, controlling terminal, and start time,
+  `lsof -d cwd,1` for working folder and log
   file, and `ps eww` (macOS) or `/proc/<pid>/environ` (Linux) for the bb
   variables. Everything goes through a `ProcessHost`, so tests answer with
   recorded output and never touch a real process.
+- bb's own processes are protected (SVC-22): the server's process, its
+  ancestors, their process groups, and anything running bb's executable,
+  which is the server's `process.execPath` unless that is a plain runtime such
+  as `node` (then only the ancestry applies). They are never listed, and a
+  group holding one, or a member with a terminal or an unreadable
+  environment, is never signalled whole (SVC-19).
 - `lib/services.ts` keeps the latest scan: only PIDs it listed can be signalled
   (SVC-13), and each signal re-checks the PID's start time first (SVC-8). Stop
   carries the plan the user confirmed (group or process, target, count) and

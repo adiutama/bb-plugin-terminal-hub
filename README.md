@@ -81,8 +81,9 @@ they outlive the session; those never show up as terminals. Open **Services**
 from the rail to see them: every process on this machine that listens on a TCP
 port and belongs to one of your environments, either because an agent of that
 environment started it (bb's `BB_ENVIRONMENT_ID` variable) or because it runs
-inside the environment's folder. Processes running in a bb terminal are left
-to the Terminals page.
+inside the environment's folder. Processes with a terminal (a bb terminal,
+Terminal.app, iTerm) are left out, and bb's own processes are never listed or
+stopped.
 
 - One table, grouped under `project › environment`: each process's ports,
   command line, the thread that started it (a link to it), PID, and how long
@@ -92,7 +93,8 @@ to the Terminals page.
 - Each row can **Open** its port at `http://127.0.0.1:<port>`, **Copy** its PID,
   command line, or a port, and **Stop** it. Stop asks first and says how many
   processes it signals: a launch such as `npm run dev` started in its own
-  process group is stopped as a whole, so a watcher cannot restart the server.
+  process group is stopped as a whole, so a watcher cannot restart the server,
+  when every process in it can be told apart; otherwise only the listener.
   If it is still running 5 seconds later, **Force stop** sends SIGKILL. Before
   any signal, the process is checked to still be the one listed.
 - The list refreshes every 5 seconds while the page is shown. Environments on
