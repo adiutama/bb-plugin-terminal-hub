@@ -1,6 +1,6 @@
 # Navigation
 
-- Status: agreed
+- Status: implemented
 - Prefix: NAV
 - Decisions: 202610171354
 
