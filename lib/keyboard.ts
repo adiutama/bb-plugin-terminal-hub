@@ -60,7 +60,7 @@ export function isolateTerminalKey(event: KeyboardEvent<HTMLElement>): void {
   }
 }
 
-/** The parts of a key event the list's keyboard handling reads. */
+/** The parts of a key event the page's `/` shortcut reads. */
 interface KeyLike {
   key: string;
   ctrlKey: boolean;
@@ -76,52 +76,15 @@ const KEEPS_SLASH =
   'input, textarea, select, [contenteditable]:not([contenteditable="false"]), .th-terminal, [role="menu"], [role="dialog"], [role="alertdialog"], [role="listbox"]';
 
 /**
- * LIST-22: `/` focuses the filter. The caller listens on the page, so focus
- * is already inside it; this rules out text fields, the terminal view,
- * menus, dialogs, modifiers, and input method composition.
+ * LIST-44: `/` focuses the rail's find field. The caller listens on the page,
+ * so focus is already inside it; this rules out text fields, the terminal
+ * view, menus, dialogs, modifiers, and input method composition.
  */
-export function isFilterShortcut(event: KeyLike): boolean {
+export function isFindShortcut(event: KeyLike): boolean {
   if (event.key !== "/" || event.defaultPrevented) return false;
   if (event.ctrlKey || event.metaKey || event.altKey || event.nativeEvent?.isComposing) {
     return false;
   }
   const target = event.target;
   return !(target instanceof Element && target.closest(KEEPS_SLASH));
-}
-
-/** LIST-23: the list's keyboard order, top to bottom. */
-export function navItems(root: ParentNode | null): HTMLElement[] {
-  return root ? Array.from(root.querySelectorAll<HTMLElement>("[data-nav-item]")) : [];
-}
-
-/**
- * LIST-23: ↑/↓, Home and End move focus between the list's items, without
- * wrapping; ↑ from the first calls `onTop`. Only keys on an item itself
- * count, so a row's dismiss and ⋯ buttons, and its open menu, keep theirs.
- */
-export function moveInList(
-  event: KeyboardEvent<HTMLElement>,
-  root: HTMLElement | null,
-  onTop: () => void,
-): void {
-  if (event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey) return;
-  const target = event.target;
-  if (!(target instanceof HTMLElement) || !target.hasAttribute("data-nav-item")) return;
-  const items = navItems(root);
-  const index = items.indexOf(target);
-  if (index === -1) return;
-  let next: HTMLElement | undefined;
-  if (event.key === "ArrowDown") next = items[index + 1] ?? target;
-  else if (event.key === "ArrowUp") {
-    if (index === 0) {
-      event.preventDefault();
-      onTop();
-      return;
-    }
-    next = items[index - 1];
-  } else if (event.key === "Home") next = items[0];
-  else if (event.key === "End") next = items.at(-1);
-  else return;
-  event.preventDefault();
-  next?.focus();
 }

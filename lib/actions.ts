@@ -1,4 +1,4 @@
-// What the row menu and the bulk cleanup do, and their guard rails.
+// What the bar's actions and the bulk cleanup do, and their guard rails.
 import { isNotFound } from "./errors";
 import {
   type HubRow,
@@ -141,9 +141,9 @@ export function endedHere(typedAgoMs: number | null): boolean {
   return typedAgoMs !== null && typedAgoMs <= ENDED_HERE_MS;
 }
 
-/** ACT-7: the terminal after the closed one, in display order, or none. */
+/** ACT-7: the tab to the right of the closed one, else the one to its left, else none. */
 export function nextSelection(order: readonly string[], closedId: string): string | null {
   const index = order.indexOf(closedId);
   if (index === -1) return null;
-  return order[index + 1] ?? null;
+  return order[index + 1] ?? order[index - 1] ?? null;
 }

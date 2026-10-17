@@ -30,6 +30,8 @@ export interface ThreadRecord {
   environmentId: string | null;
   archivedAt: number | null;
   latestAttentionAt: number;
+  /** VIEW-9: the thread that spawned this one, if any. */
+  parentThreadId?: string | null;
 }
 
 type TerminalScope =
@@ -60,15 +62,17 @@ export interface HubThread {
   state: ThreadState;
   /** When the thread stopped being active; null while it is active. */
   inactiveSince: number | null;
-  /** Orders threads under "From threads", most recent first (LIST-12). */
+  /** Orders the CLI's thread groups, most recent first (AGENT-3). */
   activityAt: number;
+  /** VIEW-9: the thread that spawned this one, if any. */
+  parentThreadId: string | null;
 }
 
 export interface HubRow {
   terminal: TerminalSession;
   /** The owning thread, for thread-scoped terminals. */
   thread: HubThread | null;
-  /** Running while its thread is not active (LIST-4). */
+  /** Running while its thread is not active; shown by the CLI only (AGENT-3). */
   stale: boolean;
 }
 
@@ -91,7 +95,7 @@ export interface EnvironmentSnapshot {
 }
 
 /**
- * LIST-3. `starting` and `stopping` are a turn in progress, so they count as
+ * VIEW-9, ACT-5. `starting` and `stopping` are a turn in progress, so they count as
  * active. `pending` is a thread that has never run, so it counts as idle.
  */
 export function threadState(thread: ThreadRecord): ThreadState {
@@ -104,7 +108,7 @@ export function threadState(thread: ThreadRecord): ThreadState {
 }
 
 /**
- * LIST-4: archived threads stopped at `archivedAt`; others at
+ * VIEW-9: archived threads stopped at `archivedAt`; others at
  * `latestAttentionAt`. Never `updatedAt`, which moves when a thread is read.
  */
 export function toHubThread(thread: ThreadRecord): HubThread {
@@ -115,6 +119,7 @@ export function toHubThread(thread: ThreadRecord): HubThread {
     state,
     inactiveSince: state === "active" ? null : (thread.archivedAt ?? thread.latestAttentionAt),
     activityAt: thread.latestAttentionAt,
+    parentThreadId: thread.parentThreadId ?? null,
   };
 }
 
@@ -124,7 +129,7 @@ export function isRunning(terminal: Pick<TerminalSession, "status">): boolean {
 
 const byCreation = (a: HubRow, b: HubRow) => a.terminal.createdAt - b.terminal.createdAt;
 
-/** LIST-2, LIST-4, LIST-12. Threads without terminals are left out. */
+/** Environment terminals, then one group per thread. Threads without terminals are left out. */
 export function groupEnvironment(snapshot: EnvironmentSnapshot): GroupedEnvironment {
   const environment = snapshot.environmentTerminals
     .map((terminal): HubRow => ({ terminal, thread: null, stale: false }))
@@ -149,9 +154,18 @@ export function groupEnvironment(snapshot: EnvironmentSnapshot): GroupedEnvironm
   return { environment, threads };
 }
 
-/** Rows in display order: "Environment" first, then "From threads". */
+/** The CLI's order: environment terminals first, then each thread's group. */
 export function orderedRows(grouped: GroupedEnvironment): HubRow[] {
   return [...grouped.environment, ...grouped.threads.flatMap((group) => group.rows)];
+}
+
+/**
+ * LIST-12: the tabs' order: environment terminals, then thread terminals,
+ * each group oldest first by creation time.
+ */
+export function tabOrder(grouped: GroupedEnvironment): HubRow[] {
+  const threadRows = grouped.threads.flatMap((group) => group.rows).sort(byCreation);
+  return [...grouped.environment, ...threadRows];
 }
 
 export function runningCount(grouped: GroupedEnvironment): number {

@@ -1,15 +1,16 @@
-// NAV-2, NAV-7: the selection lives in the page's subPath,
-// `<projectId>/<environmentId | all>/<terminalId>`.
+// NAV-2: the selection lives in the page's subPath,
+// `<projectId>/<environmentId>/<terminalId>`.
 
 export const PANEL_PATH = "terminals";
-export const ALL = "all";
 
 export interface Route {
   projectId: string | null;
-  /** An environment id, or `all` for every environment in the project. */
-  environment: string;
+  environmentId: string | null;
   terminalId: string | null;
 }
+
+/** Links from before ADR 202610171354 named `all` for every environment. */
+const LEGACY_ALL = "all";
 
 function safeDecode(part: string): string {
   try {
@@ -20,20 +21,24 @@ function safeDecode(part: string): string {
 }
 
 export function parseRoute(subPath: string): Route {
-  const [projectId, environment, terminalId] = subPath
+  const [projectId, environmentId, terminalId] = subPath
     .split("/")
     .filter((part) => part !== "")
     .map(safeDecode);
+  const environment = environmentId && environmentId !== LEGACY_ALL ? environmentId : null;
   return {
     projectId: projectId || null,
-    environment: environment || ALL,
-    terminalId: terminalId || null,
+    environmentId: environment,
+    terminalId: environment ? terminalId || null : null,
   };
 }
 
 export function formatRoute(route: Route): string {
   if (route.projectId === null) return "";
-  const parts = [route.projectId, route.environment || ALL];
-  if (route.terminalId) parts.push(route.terminalId);
+  const parts = [route.projectId];
+  if (route.environmentId) {
+    parts.push(route.environmentId);
+    if (route.terminalId) parts.push(route.terminalId);
+  }
   return parts.map(encodeURIComponent).join("/");
 }
