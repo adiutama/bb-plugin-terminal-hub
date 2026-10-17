@@ -1,9 +1,9 @@
 # Navigate by environment in a rail, and show its terminals as tabs
 
-- Status: accepted
+- Status: superseded
 - Date: 2026-10-17
 - Supersedes: 202610111439, 202610100909, 202610100902, 202610100904, 202610101629
-- Superseded by: none
+- Superseded by: 202610171551
 - Applies to: docs/overview.md, docs/specs/session-list.md, docs/specs/navigation.md, docs/specs/actions.md, docs/specs/terminal-view.md, docs/architecture.md, lib/hub-store.ts, lib/route.ts, lib/page-memory.ts, lib/all-view.ts, lib/actions.ts, components/terminals-page.tsx, components/session-list.tsx, components/session-row.tsx, components/list-header.tsx, components/terminal-bar.tsx, components/empty-pane.tsx, components/header-count.tsx, README.md
 
 ## Context
