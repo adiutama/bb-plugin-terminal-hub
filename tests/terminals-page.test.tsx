@@ -375,7 +375,7 @@ describe("rail", () => {
     expect(railItem("env_c")).toHaveTextContent(/^trunk1$/);
     expect(railItem("env_path")).toHaveTextContent(/^scratch1$/);
     const b = railItem("env_b") as HTMLElement;
-    expect(b).toHaveAttribute("title", "bb/feature-x");
+    expect(b).toHaveAttribute("title", "bb/feature-x\n/Users/me/wt/feature-x");
     expect(within(b).getByText("bb/feature-x")).toHaveClass("truncate");
 
     // Its only terminal ended: still listed, with no count.
@@ -1411,4 +1411,47 @@ describe("tab close and shortcuts", () => {
       bb.stop();
     }
   });
+});
+
+it("LIST-34, VIEW-9: same-named environments of a project are told apart by the part of the path that differs, in the rail, the menu, and the bar", async () => {
+  const review = (id: string, clone: string) =>
+    environment(id, "proj_1", {
+      name: null,
+      branchName: "feature/review",
+      path: `/tmp/T/${clone}/repo`,
+    });
+  const w = twoProjects({
+    environments: [
+      ...twoProjects().environments,
+      review("env_r1", "review-pr-CuiApF"),
+      review("env_r2", "review-pr-Pn4Tl8"),
+      // Same branch in another project: names are told apart per project.
+      environment("env_other", "proj_2", { name: null, branchName: "feature/review" }),
+    ],
+    terminals: [
+      terminal({ id: "r1", environmentId: "env_r1", initialCwd: "/tmp/T/review-pr-CuiApF/repo" }),
+      terminal({ id: "o1", environmentId: "env_other" }),
+    ],
+  });
+  await mountPage(w, "proj_1/env_r1/r1");
+  await screen.findByTestId("terminal-view");
+  await waitFor(() => expect(railItem("env_r1")).toBeTruthy());
+  expect(railItem("env_r1")).toHaveTextContent(/^feature\/review · review-pr-CuiApF1$/);
+  expect(railItem("env_r1")).toHaveAttribute(
+    "title",
+    "feature/review · review-pr-CuiApF\n/tmp/T/review-pr-CuiApF/repo",
+  );
+  expect(railItem("env_other")).toHaveTextContent(/^feature\/review1$/);
+  expect(bar().getByText("Project one/feature/review · review-pr-CuiApF")).toBeTruthy();
+  const menu = await openMenu(rail().getByRole("button", { name: "New terminal in Project one…" }));
+  expect(
+    within(menu)
+      .getAllByRole("menuitem")
+      .map((item) => item.textContent),
+  ).toEqual([
+    "main",
+    "bb/feature-x",
+    "feature/review · review-pr-CuiApF",
+    "feature/review · review-pr-Pn4Tl8",
+  ]);
 });

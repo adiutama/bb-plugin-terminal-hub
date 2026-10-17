@@ -1,6 +1,8 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  distinguishingSegment,
+  environmentInfos,
   FAST_REFRESH_MS,
   HubStore,
   hubStoreFor,
@@ -1278,5 +1280,53 @@ describe("hub store", () => {
       await vi.advanceTimersByTimeAsync(0);
       expect(store.getView().rows.map((r) => r.terminal.id)).toContain("c1");
     });
+  });
+});
+
+describe("environment names", () => {
+  const env = (
+    id: string,
+    name: string | null,
+    branchName: string | null,
+    path: string | null,
+  ) => ({
+    id,
+    name,
+    branchName,
+    path,
+    hostId: "host_1",
+    status: "ready",
+  });
+
+  it("LIST-34: a unique name stands alone; shared names get the last path segment that differs", () => {
+    const names = environmentInfos([
+      env("a", null, "main", "/Users/me/repo"),
+      env("b", null, "feature/review", "/T/review-pr-CuiApF/repo"),
+      env("c", null, "feature/review", "/T/review-pr-Pn4Tl8/repo"),
+      env("d", "feature/review", null, "/T/review-pr-BYxDhc/repo"),
+      env("e", null, null, "/Users/me/checkouts/scratch"),
+    ]).map((info) => info.name);
+    expect(names).toEqual([
+      "main",
+      "feature/review · review-pr-CuiApF",
+      "feature/review · review-pr-Pn4Tl8",
+      "feature/review · review-pr-BYxDhc",
+      "scratch",
+    ]);
+  });
+
+  it("LIST-34: the differing segment is the last one that differs from every other path", () => {
+    expect(distinguishingSegment("/a/x/repo", ["/a/y/repo"])).toBe("x");
+    expect(distinguishingSegment("/a/x/one", ["/a/x/two"])).toBe("one");
+    // Shorter paths count as differing where they have no segment.
+    expect(distinguishingSegment("/deep/a/repo", ["/a/repo"])).toBe("deep");
+    // Identical paths have nothing to tell them apart.
+    expect(distinguishingSegment("/same/repo", ["/same/repo"])).toBeNull();
+    expect(
+      environmentInfos([
+        env("x", null, "dup", "/same/repo"),
+        env("y", null, "dup", "/same/repo"),
+      ]).map((info) => info.name),
+    ).toEqual(["dup", "dup"]);
   });
 });
