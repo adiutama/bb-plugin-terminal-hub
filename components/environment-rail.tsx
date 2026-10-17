@@ -1,17 +1,10 @@
-// The left rail: "Find environment", then bb's projects with their
-// environments that have terminals (LIST-33 to LIST-35, LIST-41 to LIST-45).
+// The left rail: "Find environment" and its `+`, then bb's projects with
+// their environments that have terminals (LIST-33 to LIST-35, LIST-41 to
+// LIST-45, LIST-49).
 import { type KeyboardEvent, type RefObject, useEffect, useLayoutEffect, useRef } from "react";
-import { useProjectMenus } from "@/components/folder-states";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
+import { NewTerminalMenu } from "@/components/new-terminal-menu";
 import { Icon } from "@/components/ui/icon";
-import type { MenuEnvironments } from "@/lib/folders";
-import type { HubSnapshot, ProjectRecord } from "@/lib/hub";
+import type { HubSnapshot } from "@/lib/hub";
 import { applyScrollAnchor, type PageMemory, readScrollAnchor } from "@/lib/page-memory";
 import { filterRail, findWords, type Place, type RailGroup } from "@/lib/rail";
 import { cn } from "@/lib/utils";
@@ -74,65 +67,6 @@ function useRememberedScroll(
   }, [scroller, memory]);
 }
 
-/** "Checking folders…" while a menu's folder checks run (LIST-48). */
-export function CheckingFolders() {
-  return (
-    <p role="status" className="px-2 py-1.5 text-[12px] text-muted-foreground">
-      Checking folders…
-    </p>
-  );
-}
-
-/**
- * LIST-41, LIST-48: a project's "New terminal in…" menu: its environments
- * whose folder may hold a shell, checked when the menu opens.
- */
-function NewTerminalIn({
-  project,
-  menu,
-  onOpen,
-  creating,
-  onCreate,
-}: {
-  project: ProjectRecord;
-  menu: MenuEnvironments;
-  onOpen: () => void;
-  creating: boolean;
-  onCreate: (environmentId: string) => void;
-}) {
-  return (
-    <DropdownMenu onOpenChange={(open) => open && onOpen()}>
-      <DropdownMenuTrigger asChild>
-        <button
-          type="button"
-          aria-label={`New terminal in ${project.name}…`}
-          title="New terminal in…"
-          disabled={creating}
-          className="grid size-6 shrink-0 place-items-center rounded-md text-muted-foreground opacity-0 transition-opacity duration-150 hover:bg-foreground/6 hover:text-foreground focus-visible:opacity-100 focus-visible:outline-2 focus-visible:outline-ring group-hover:opacity-100 group-focus-within:opacity-100 data-[state=open]:opacity-100 motion-reduce:transition-none pointer-coarse:size-9 pointer-coarse:opacity-100"
-        >
-          <Icon name="Plus" className="size-3.5" aria-hidden="true" />
-        </button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="max-w-80">
-        <DropdownMenuLabel>New terminal in…</DropdownMenuLabel>
-        {menu.shown.map((env) => (
-          <DropdownMenuItem key={env.id} onSelect={() => onCreate(env.id)}>
-            <Icon
-              name="GitBranch"
-              className="size-3 shrink-0 text-muted-foreground"
-              aria-hidden="true"
-            />
-            <span className="truncate font-mono text-[12px]" title={`${env.name}\n${env.path}`}>
-              {env.name}
-            </span>
-          </DropdownMenuItem>
-        ))}
-        {menu.checking ? <CheckingFolders /> : null}
-      </DropdownMenuContent>
-    </DropdownMenu>
-  );
-}
-
 export interface RailProps {
   snapshot: HubSnapshot;
   /** The rail as LIST-33 lists it, before "Find environment". */
@@ -163,7 +97,6 @@ export function EnvironmentRail({
   onCreate,
   memory,
 }: RailProps) {
-  const menus = useProjectMenus(snapshot);
   const words = findWords(find);
   const finding = words.length > 0;
   const shown = filterRail(
@@ -205,15 +138,15 @@ export function EnvironmentRail({
     else items[index - 1]?.focus();
   };
 
-  // LIST-44: Escape clears, then moves to the selected environment; ↓ enters
-  // the rail; Enter selects the first environment shown.
+  // LIST-45: in the find field, Escape clears; ↓ enters the rail; Enter
+  // selects the first environment shown.
   const onFindKey = (event: KeyboardEvent<HTMLInputElement>) => {
     if (event.nativeEvent.isComposing) return;
     if (event.key === "Escape") {
+      if (find === "") return;
       event.preventDefault();
       event.stopPropagation();
-      if (find !== "") onFind("");
-      else listRef.current?.querySelector<HTMLElement>(`${ITEM}[aria-current="true"]`)?.focus();
+      onFind("");
     } else if (event.key === "ArrowDown") {
       const first = railItems(listRef.current)[0];
       if (first) {
@@ -235,29 +168,35 @@ export function EnvironmentRail({
         SIDEBAR_TONE_CLASS,
       )}
     >
-      <label className={cn(BAND_CLASS, "flex items-center gap-2 pl-4 pr-3 text-muted-foreground")}>
-        <Icon name="Search" className="size-3.5 shrink-0" aria-hidden="true" />
-        <input
-          ref={findRef}
-          type="text"
-          value={find}
-          onChange={(event) => onFind(event.target.value)}
-          onKeyDown={onFindKey}
-          placeholder="Find environment"
-          aria-label="Find environment"
-          spellCheck={false}
-          autoComplete="off"
-          className="min-w-0 flex-1 bg-transparent text-[13px] text-foreground outline-none placeholder:text-muted-foreground/70"
-        />
-        {find === "" ? (
-          <kbd
-            title="Press / to find"
-            className="hidden rounded border border-foreground/12 px-1.5 py-0.5 font-sans text-[11px] leading-none pointer-fine:inline"
+      <div className={cn(BAND_CLASS, "flex items-center gap-1 pr-2")}>
+        <label className="flex h-full min-w-0 flex-1 items-center gap-2 pl-4 text-muted-foreground">
+          <Icon name="Search" className="size-3.5 shrink-0" aria-hidden="true" />
+          <input
+            ref={findRef}
+            type="text"
+            value={find}
+            onChange={(event) => onFind(event.target.value)}
+            onKeyDown={onFindKey}
+            placeholder="Find environment"
+            aria-label="Find environment"
+            spellCheck={false}
+            autoComplete="off"
+            className="min-w-0 flex-1 bg-transparent text-[13px] text-foreground outline-none placeholder:text-muted-foreground/70"
+          />
+        </label>
+        {/* LIST-49: New terminal in… for every project, always here. */}
+        <NewTerminalMenu snapshot={snapshot} creating={creating} onCreate={onCreate}>
+          <button
+            type="button"
+            aria-label="New terminal in…"
+            title="New terminal in…"
+            disabled={creating}
+            className="grid size-7 shrink-0 place-items-center rounded-md text-muted-foreground outline-none hover:bg-foreground/6 hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50 pointer-coarse:size-9"
           >
-            /
-          </kbd>
-        ) : null}
-      </label>
+            <Icon name="Plus" className="size-4" aria-hidden="true" />
+          </button>
+        </NewTerminalMenu>
+      </div>
       {/* LIST-27: what is shown is kept from before a return, until confirmed. */}
       {snapshot.lastKnown ? (
         <p
@@ -302,15 +241,23 @@ export function EnvironmentRail({
                     {group.project.name}
                   </span>
                 </button>
-                <NewTerminalIn
-                  project={group.project}
-                  menu={menus.forProject(group.project.id)}
-                  onOpen={() => menus.check(menus.forProject(group.project.id).unchecked)}
+                <NewTerminalMenu
+                  snapshot={snapshot}
+                  projectIds={[group.project.id]}
                   creating={creating}
-                  onCreate={(environmentId) =>
-                    onCreate({ projectId: group.project.id, environmentId })
-                  }
-                />
+                  onCreate={onCreate}
+                  align="end"
+                >
+                  <button
+                    type="button"
+                    aria-label={`New terminal in ${group.project.name}…`}
+                    title="New terminal in…"
+                    disabled={creating}
+                    className="grid size-6 shrink-0 place-items-center rounded-md text-muted-foreground opacity-0 transition-opacity duration-150 hover:bg-foreground/6 hover:text-foreground focus-visible:opacity-100 focus-visible:outline-2 focus-visible:outline-ring group-hover:opacity-100 group-focus-within:opacity-100 data-[state=open]:opacity-100 motion-reduce:transition-none pointer-coarse:size-9 pointer-coarse:opacity-100"
+                  >
+                    <Icon name="Plus" className="size-3.5" aria-hidden="true" />
+                  </button>
+                </NewTerminalMenu>
               </div>
               {group.error ? (
                 <p role="alert" className="ml-5 text-[12px] text-destructive">
