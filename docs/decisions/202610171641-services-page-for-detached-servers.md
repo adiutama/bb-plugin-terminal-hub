@@ -34,6 +34,15 @@ Options considered for what counts as a service:
 - **Only processes recorded in a registry agents write.** Rejected: sees only
   agents that follow one convention.
 
+Options considered for the layout:
+
+- **A table with a log drawer.** Adopted by the user: every port across all
+  environments at a glance, with the log a click away.
+- **A list with a detail pane, like the Terminals page.** Rejected: a service
+  has little to show besides its log, and one-at-a-time hides the overview.
+- **A card per environment.** Rejected: least dense, and the log needs a
+  modal.
+
 ## Decision
 
 1. **A second page, "Services".** The plugin registers a second `navPanel`,
@@ -41,14 +50,22 @@ Options considered for what counts as a service:
 2. **What it lists.** A process listening on a TCP port whose working folder
    is an environment's folder or inside it, on the machine running bb, and
    that is not running in a bb terminal. One row per process, with all its
-   ports. Grouped by project and environment as the Terminals rail is.
-3. **Row details.** Ports, PID, command line, start time, and, when its
-   standard output is a regular file, that file's path.
+   ports.
+3. **Its own layout: a table with a log drawer.** Not the Terminals page's
+   rail and tabs: services are short rows to scan and compare (which ports
+   are taken, what is still up), not shells to work in. The page is one
+   full-width table with a header holding a find field and the running
+   count. Columns: port(s), process (command line), PID, uptime, actions.
+   Rows are grouped under a header row per environment, `project ›
+   environment`, ordered as the Terminals rail orders environments.
+   Selecting a row opens a drawer along the bottom of the page with that
+   process's log tail and its log path; one drawer at a time, closed with ×.
+   The table stays visible above it.
 4. **Actions.** Open `http://127.0.0.1:<port>` in the browser; copy PID,
-   command line or port; view the log file's tail, read-only, refreshed while
-   shown; Stop. Stop asks for confirmation, re-checks that the PID still has
-   the same start time, and sends SIGTERM; if the process is still alive after
-   a few seconds it offers Force stop (SIGKILL).
+   command line or port; view the log file's tail in the drawer, read-only,
+   refreshed while shown; Stop. Stop asks for confirmation, re-checks that
+   the PID still has the same start time, and sends SIGTERM; if the process
+   is still alive after a few seconds it offers Force stop (SIGKILL).
 5. **Detection runs in the server entry** with `lsof` and `ps`, called from
    the page over plugin RPC, and refreshes on a timer only while the page is
    visible (as ADR 202610100911 does for output).
