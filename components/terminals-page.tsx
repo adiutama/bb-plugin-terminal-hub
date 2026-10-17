@@ -6,6 +6,7 @@ import {
   useBbContext,
   useBbNavigate,
   useRealtimeConnectionState,
+  useRpc,
   useSdk,
 } from "@get-bb/plugin-sdk/app";
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
@@ -14,12 +15,14 @@ import { ConfirmDialog, RenameDialog } from "@/components/dialogs";
 import { EmptyPane } from "@/components/empty-pane";
 import { EnvironmentRail } from "@/components/environment-rail";
 import { NewTerminalMenu } from "@/components/new-terminal-menu";
+import { ServicesView, useServicesPolling } from "@/components/services-page";
 import { type BarActions, TerminalBar } from "@/components/terminal-bar";
 import { TerminalTabs } from "@/components/terminal-tabs";
 import { TerminalView } from "@/components/terminal-view";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
 import { useNow } from "@/hooks/useNow";
+import { useVisible } from "@/hooks/useVisible";
 import { endedHere, nextSelection, renameTerminal, restartTerminal } from "@/lib/actions";
 import { isNotFound } from "@/lib/errors";
 import { type HubSnapshot, hubFor } from "@/lib/hub";
@@ -36,6 +39,8 @@ import {
   railOrder,
 } from "@/lib/rail";
 import { formatRoute, PANEL_PATH, parseRoute, type Route } from "@/lib/route";
+import type { ServicesContract } from "@/lib/services-contract";
+import { servicesStoreFor } from "@/lib/services-store";
 
 /** A new hub terminal's size until the view fits it to the page. */
 const NEW_TERMINAL_SIZE = { cols: 120, rows: 32 };
@@ -122,6 +127,14 @@ export function TerminalsPage({ subPath }: PluginNavPanelProps) {
   const hub = hubFor(sdk);
   const snapshot = useSyncExternalStore(hub.subscribe, hub.getSnapshot);
   const now = useNow(30_000);
+
+  // SVC-1, SVC-10, SVC-23: the main view shows the terminals or Services,
+  // switched from the title bar's button; the terminals' selection stays in
+  // the URL meanwhile, and their sessions are untouched.
+  const services = servicesStoreFor(sdk);
+  const mainView = useSyncExternalStore(services.subscribe, services.getSnapshot).view;
+  const visible = useVisible();
+  useServicesPolling(useRpc<ServicesContract>(), services, visible);
 
   // LIST-8, LIST-27: attaching starts every project's store, and on a return
   // checks the selection first (LIST-28); later route changes go through select.
@@ -342,6 +355,8 @@ export function TerminalsPage({ subPath }: PluginNavPanelProps) {
   const findRef = useRef<HTMLInputElement>(null);
 
   const selectPlace = (place: Place) => {
+    // SVC-1: choosing an environment returns to the terminals.
+    services.setView("terminals");
     if (place.environmentId === route.environmentId) return;
     setMissing(null);
     go(placeRoute(place), false);
@@ -380,6 +395,7 @@ export function TerminalsPage({ subPath }: PluginNavPanelProps) {
       });
       fresh.current.add(session.id);
       hub.storeFor(place.projectId).upsert(session);
+      services.setView("terminals");
       setMissing(null);
       go({ ...place, terminalId: session.id }, false);
     } catch (error) {
@@ -462,109 +478,118 @@ export function TerminalsPage({ subPath }: PluginNavPanelProps) {
         memory={memory}
       />
       <main className="flex min-w-0 flex-1 flex-col bg-background">
-        {showsEnvironment && route.projectId && route.environmentId ? (
-          <TerminalTabs
-            rows={tabs}
-            selectedId={selectedId}
-            hints={view?.hints ?? new Map()}
-            environmentName={environment?.name ?? route.environmentId}
-            creating={creating}
-            onClose={closeTab}
-            onSelect={(terminalId) => {
-              setMissing(null);
-              go({ ...route, terminalId }, false);
-            }}
-            onCreate={() =>
-              route.projectId &&
-              route.environmentId &&
-              void newTerminal({ projectId: route.projectId, environmentId: route.environmentId })
-            }
-          />
-        ) : null}
-        {missing?.kind === "gone" ? (
-          <div
-            role="status"
-            className="flex shrink-0 items-center gap-2 border-b border-foreground/8 px-4 py-1.5 text-[12.5px] text-muted-foreground"
-          >
-            <span className="flex-1">
-              That terminal is gone
-              {missing.exitCode === null ? "" : ` (it exited with code ${missing.exitCode})`}.
-            </span>
-            <button
-              type="button"
-              aria-label="Dismiss notice"
-              className="grid size-6 place-items-center rounded-md hover:bg-foreground/6"
-              onClick={() => setMissing(null)}
-            >
-              <Icon name="X" className="size-3.5" aria-hidden="true" />
-            </button>
-          </div>
-        ) : null}
-        {selectedSession && selectedId && barRow ? (
+        {mainView === "services" ? (
+          <ServicesView store={services} visible={visible} />
+        ) : (
           <>
-            <TerminalBar
-              row={barRow}
-              place={projectName && environment ? `${projectName}/${environment.name}` : null}
-              folder={folder}
-              hint={view?.hints.get(selectedId)}
-              spawnedBy={spawnedBy}
-              now={now}
-              actions={actions}
-            />
-            {/* VIEW-10: the inset lies outside the element the view measures. */}
-            <div data-terminal-inset="" className="flex min-h-0 min-w-0 flex-1 px-4 py-3.5">
-              <TerminalView
-                key={selectedId}
-                sdk={sdk}
-                terminalId={selectedId}
-                cols={selectedSession.cols}
-                rows={selectedSession.rows}
-                fresh={fresh.current.has(selectedId)}
-                onOutput={(id, bytes) => store?.pushOutput(id, bytes)}
-                onExit={(id, status, exitCode, typedAgoMs) => {
-                  // LIST-32: ended by the user's own typing here: gone, like a
-                  // dismissed tab, and the selection moves on (ACT-7).
-                  if (endedHere(typedAgoMs)) {
-                    store?.dismiss(id);
-                    if (id === routeRef.current.terminalId) moveOn(id, tabIds);
-                  } else store?.noteEnded(id, status, exitCode);
-                }}
-              />
-            </div>
-          </>
-        ) : missing?.kind === "unreachable" ? (
-          <div className="m-auto flex max-w-sm flex-col items-center gap-3 text-center text-sm">
-            <p role="alert" className="text-destructive">
-              Could not reach this terminal: {missing.message}
-            </p>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => {
-                setMissing(null);
-                setLookupNonce((n) => n + 1);
-              }}
-            >
-              Retry
-            </Button>
-          </div>
-        ) : showsEnvironment ? null : (
-          // LIST-25: the sentence for the state.
-          <EmptyPane message={emptyMessage}>
-            {nothingRuns ? (
-              <NewTerminalMenu
-                snapshot={snapshot}
+            {showsEnvironment && route.projectId && route.environmentId ? (
+              <TerminalTabs
+                rows={tabs}
+                selectedId={selectedId}
+                hints={view?.hints ?? new Map()}
+                environmentName={environment?.name ?? route.environmentId}
                 creating={creating}
-                onCreate={(place) => void newTerminal(place)}
-                align="center"
-              >
-                <Button variant="outline" size="sm" disabled={creating}>
-                  <Icon name="Plus" aria-hidden="true" />
-                  New terminal in…
-                </Button>
-              </NewTerminalMenu>
+                onClose={closeTab}
+                onSelect={(terminalId) => {
+                  setMissing(null);
+                  go({ ...route, terminalId }, false);
+                }}
+                onCreate={() =>
+                  route.projectId &&
+                  route.environmentId &&
+                  void newTerminal({
+                    projectId: route.projectId,
+                    environmentId: route.environmentId,
+                  })
+                }
+              />
             ) : null}
-          </EmptyPane>
+            {missing?.kind === "gone" ? (
+              <div
+                role="status"
+                className="flex shrink-0 items-center gap-2 border-b border-foreground/8 px-4 py-1.5 text-[12.5px] text-muted-foreground"
+              >
+                <span className="flex-1">
+                  That terminal is gone
+                  {missing.exitCode === null ? "" : ` (it exited with code ${missing.exitCode})`}.
+                </span>
+                <button
+                  type="button"
+                  aria-label="Dismiss notice"
+                  className="grid size-6 place-items-center rounded-md hover:bg-foreground/6"
+                  onClick={() => setMissing(null)}
+                >
+                  <Icon name="X" className="size-3.5" aria-hidden="true" />
+                </button>
+              </div>
+            ) : null}
+            {selectedSession && selectedId && barRow ? (
+              <>
+                <TerminalBar
+                  row={barRow}
+                  place={projectName && environment ? `${projectName}/${environment.name}` : null}
+                  folder={folder}
+                  hint={view?.hints.get(selectedId)}
+                  spawnedBy={spawnedBy}
+                  now={now}
+                  actions={actions}
+                />
+                {/* VIEW-10: the inset lies outside the element the view measures. */}
+                <div data-terminal-inset="" className="flex min-h-0 min-w-0 flex-1 px-4 py-3.5">
+                  <TerminalView
+                    key={selectedId}
+                    sdk={sdk}
+                    terminalId={selectedId}
+                    cols={selectedSession.cols}
+                    rows={selectedSession.rows}
+                    fresh={fresh.current.has(selectedId)}
+                    onOutput={(id, bytes) => store?.pushOutput(id, bytes)}
+                    onExit={(id, status, exitCode, typedAgoMs) => {
+                      // LIST-32: ended by the user's own typing here: gone, like a
+                      // dismissed tab, and the selection moves on (ACT-7).
+                      if (endedHere(typedAgoMs)) {
+                        store?.dismiss(id);
+                        if (id === routeRef.current.terminalId) moveOn(id, tabIds);
+                      } else store?.noteEnded(id, status, exitCode);
+                    }}
+                  />
+                </div>
+              </>
+            ) : missing?.kind === "unreachable" ? (
+              <div className="m-auto flex max-w-sm flex-col items-center gap-3 text-center text-sm">
+                <p role="alert" className="text-destructive">
+                  Could not reach this terminal: {missing.message}
+                </p>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    setMissing(null);
+                    setLookupNonce((n) => n + 1);
+                  }}
+                >
+                  Retry
+                </Button>
+              </div>
+            ) : showsEnvironment ? null : (
+              // LIST-25: the sentence for the state.
+              <EmptyPane message={emptyMessage}>
+                {nothingRuns ? (
+                  <NewTerminalMenu
+                    snapshot={snapshot}
+                    creating={creating}
+                    onCreate={(place) => void newTerminal(place)}
+                    align="center"
+                  >
+                    <Button variant="outline" size="sm" disabled={creating}>
+                      <Icon name="Plus" aria-hidden="true" />
+                      New terminal in…
+                    </Button>
+                  </NewTerminalMenu>
+                ) : null}
+              </EmptyPane>
+            )}
+          </>
         )}
       </main>
       <RenameDialog

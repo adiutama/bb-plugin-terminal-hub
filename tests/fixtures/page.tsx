@@ -40,13 +40,26 @@ export async function mountPage(
   context: { projectId?: string | null; threadId?: string | null } = { projectId: "proj_1" },
   /** Runs on the fake SDK before the page mounts, to hold or fail calls. */
   prepare?: (sdk: ReturnType<typeof fakeSdk>["sdk"]) => void,
+  /** The server's RPC methods; without them, Services calls fail. */
+  rpc?: Record<string, (input: unknown) => unknown>,
 ): Promise<MountedPage> {
   const app = await loadApp();
   const panel = app.navPanels[0];
   if (!panel) throw new Error("no navPanel");
   const Page = panel.component as ComponentType<PluginNavPanelProps>;
+  // bb's title bar holds the panel's headerContent, mounted apart from the page.
+  const Header = panel.headerContent as ComponentType<PluginNavPanelProps>;
   const Shell = ({ subPath, open = true }: { subPath: string; open?: boolean }) =>
-    open ? <Page subPath={subPath} /> : <div data-testid="elsewhere" />;
+    open ? (
+      <>
+        <div data-testid="title-bar">
+          <Header subPath={subPath} />
+        </div>
+        <Page subPath={subPath} />
+      </>
+    ) : (
+      <div data-testid="elsewhere" />
+    );
   const bb = fakeSdk(w);
   prepare?.(bb.sdk);
   let current = subPath;
@@ -55,7 +68,7 @@ export async function mountPage(
   const slot = renderSlot(
     { component: Shell },
     { subPath },
-    { sdk: bb.sdk as any, context: { threadId: null, ...context } },
+    { sdk: bb.sdk as any, rpc: rpc as any, context: { threadId: null, ...context } },
   );
   const navigations = () =>
     slot.inspection.navigateCalls.flatMap((call) =>

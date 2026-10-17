@@ -183,7 +183,7 @@ function hold<A extends unknown[], R>(method: {
 describe("navigation", () => {
   it("NAV-1: registers a navPanel titled Terminals at path terminals", async () => {
     const app = await loadApp();
-    // The Terminals page comes first; the Services page is SVC-1.
+    // Services have no page of their own (SVC-1).
     expect(app.navPanels[0]).toMatchObject({
       id: "terminals",
       title: "Terminals",
@@ -1520,5 +1520,54 @@ describe("New terminal in… search and the rail's +", () => {
     expect(document.activeElement).toBe(tab);
     expect(page.sdk.terminals.create).not.toHaveBeenCalled();
     expect(page.sdk.terminals.close).not.toHaveBeenCalled();
+  });
+});
+
+describe("the Services view in the main area", () => {
+  /** A server answering with an empty list: the terminals tests need no processes. */
+  const emptyServices = {
+    "services.list": () => ({ available: true, hostKnown: true, groups: [], error: null }),
+  };
+  const servicesButton = () =>
+    within(screen.getByTestId("title-bar")).getByRole("button", { name: /^Services/ });
+
+  it("SVC-23: switching to Services and back keeps the selected environment and terminal, and leaves the session alone", async () => {
+    const w = twoProjects({
+      terminals: [terminal({ id: "a1" }), terminal({ id: "a2", createdAt: 5 })],
+    });
+    const page = await mountPage(w, "proj_1/env_a/a2", undefined, undefined, emptyServices);
+    await waitFor(() => expect(mounts).toEqual(["mount a2"]));
+    const before = page.navigations().length;
+    fireEvent.click(servicesButton());
+    expect(await screen.findByRole("region", { name: "Services" })).toBeInTheDocument();
+    // The view lets go of the terminal; the session is not touched.
+    expect(mounts).toEqual(["mount a2", "unmount a2"]);
+    expect(screen.queryByRole("tablist", { name: "Terminals" })).toBeNull();
+    fireEvent.click(servicesButton());
+    await waitFor(() => expect(mounts).toEqual(["mount a2", "unmount a2", "mount a2"]));
+    expect(page.subPath()).toBe("proj_1/env_a/a2");
+    expect(page.navigations()).toHaveLength(before);
+    expect(page.sdk.terminals.close).not.toHaveBeenCalled();
+    expect(page.sdk.terminals.restart).not.toHaveBeenCalled();
+    expect(screen.getByRole("tab", { name: /a2/ })).toHaveAttribute("aria-selected", "true");
+  });
+
+  it("SVC-1: selecting an environment in the rail returns to the terminals, the selected one included", async () => {
+    const w = twoProjects({
+      terminals: [terminal({ id: "a1" }), terminal({ id: "b1", environmentId: "env_b" })],
+    });
+    const page = await mountPage(w, "proj_1/env_a/a1", undefined, undefined, emptyServices);
+    await waitFor(() => expect(mounts).toEqual(["mount a1"]));
+    fireEvent.click(servicesButton());
+    await screen.findByRole("region", { name: "Services" });
+    fireEvent.click(railItem("env_a")!);
+    await waitFor(() => expect(screen.queryByRole("region", { name: "Services" })).toBeNull());
+    expect(servicesButton()).toHaveAttribute("aria-pressed", "false");
+    expect(page.subPath()).toBe("proj_1/env_a/a1");
+    fireEvent.click(servicesButton());
+    await screen.findByRole("region", { name: "Services" });
+    fireEvent.click(railItem("env_b")!);
+    await waitFor(() => expect(page.subPath()).toBe("proj_1/env_b/b1"));
+    expect(screen.queryByRole("region", { name: "Services" })).toBeNull();
   });
 });
