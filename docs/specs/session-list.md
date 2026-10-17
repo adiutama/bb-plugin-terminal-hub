@@ -1,6 +1,6 @@
 # Session list
 
-- Status: draft
+- Status: agreed
 - Prefix: LIST
 - Decisions: 202610100901, 202610100911, 202610171354
 
@@ -26,8 +26,8 @@ terminals. Nothing in the rail or the tabs asks for attention: no status
 dots, no ages, no stale marks. An ended terminal's tab is dimmed and shows
 its exit code, so a crashed server never looks like a running one.
 
-`bb/map-all-page-urls-for-the-app` shows as `map-all-page-urls-for-the-app`;
-`proto/visual-direction` shows as it is.
+Environment names show as bb shows them (`bb/map-all-page-urls-for-the-app`,
+`proto/visual-direction`), truncated when long.
 
 Hovering a project header shows a `+`. Its "New terminal in…" menu lists
 every environment of the project, empty ones included, and is how a first
@@ -61,7 +61,7 @@ the environment, archived ones included
 - **LIST-31** While the page is not shown, the lists keep receiving bb's signals but fetch nothing: they note which threads changed, whether the environments changed, and whether the realtime connection came back, and fetch them on return (LIST-28). (ADR 202610171354)
 - **LIST-32** When the terminal shown in the view ends within 5 seconds of the user typing into that view (for example `exit`, Ctrl-D, or Ctrl-C on its process), whatever its exit code, its tab is removed as if dismissed, and the selection moves as after a close (ACT-7). A terminal that ends any other way, on its own, from elsewhere, or without recent typing in the view, keeps its ended tab (LIST-11). (ADR 202610171354)
 - **LIST-33** The rail lists bb's projects in bb's order, each as a header with the project's name, and under it the project's environments in bb's order. An environment is listed only when it has terminals, running or ended and not dismissed (LIST-11), or holds the selected terminal; a project is listed only when it lists an environment. (ADR 202610171354)
-- **LIST-34** An environment shows its name: bb's environment name, else its branch, else the last part of its path. A leading `bb/` is left out; the full name shows on hover. Next to the name is the number of its running terminals, left out when zero. (ADR 202610171354)
+- **LIST-34** An environment shows its name: bb's environment name, else its branch, else the last part of its path, as bb gives it, truncated at the end when it does not fit, with the full name on hover. Next to the name is the number of its running terminals, left out when zero. (ADR 202610171354)
 - **LIST-35** Clicking a project header folds or unfolds its environments; it never changes the selection. A folded project still shows its header. Folded projects are remembered until bb reloads. A folded project that holds the selected environment shows that environment. (ADR 202610171354)
 - **LIST-36** Clicking an environment selects it: its terminals become the tabs, and the tab it last showed since bb loaded is selected, else its first tab. The selected environment is marked in the rail. (ADR 202610171354)
 - **LIST-37** An environment is always selected while one is listed. When the selected environment leaves the rail, because its last terminal closed or was dismissed, the next environment listed below it is selected, else the one above, else none. (ADR 202610171354)

@@ -1,9 +1,9 @@
 # Show the running count in the page header, not on the rail
 
-- Status: accepted
+- Status: superseded
 - Date: 2026-10-10
 - Supersedes: 202610100906
-- Superseded by: none
+- Superseded by: 202610171354
 - Applies to: docs/specs/navigation.md (planned)
 
 ## Context

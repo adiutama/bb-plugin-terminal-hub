@@ -1,9 +1,9 @@
 # Remove a terminal the user ends from its view
 
-- Status: accepted
+- Status: superseded
 - Date: 2026-10-11
 - Supersedes: 202610111227
-- Superseded by: none
+- Superseded by: 202610171354
 - Applies to: docs/specs/session-list.md, docs/specs/terminal-view.md, docs/specs/actions.md, lib/pump.ts, components/terminal-view.tsx, components/terminals-page.tsx, README.md
 
 ## Context

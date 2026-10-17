@@ -1,9 +1,9 @@
 # Complement BB's native terminals, do not replace them
 
-- Status: accepted
+- Status: superseded
 - Date: 2026-10-10
 - Supersedes: none
-- Superseded by: none
+- Superseded by: 202610171354
 - Applies to: all specs
 
 ## Context

@@ -1,6 +1,6 @@
 # Navigate by environment in a rail, and show its terminals as tabs
 
-- Status: proposed
+- Status: accepted
 - Date: 2026-10-17
 - Supersedes: 202610111439, 202610100909, 202610100902, 202610100904, 202610101629
 - Superseded by: none
@@ -39,8 +39,8 @@ seven layouts against bb's chrome with live data. Findings:
 - **⌘K is bb's own thread switcher.** The page must not bind it.
 - **Environment names are branch names.** Worktrees bb creates are named
   `bb/<slug>` (`bb/map-all-page-urls-for-the-app`); others are plain branches
-  (`main`, `proto/visual-direction`). The shared `bb/` prefix wastes the
-  rail's width.
+  (`main`, `proto/visual-direction`). The user wants them shown as bb shows
+  them, prefix included.
 
 Options weighed and rejected in the prototype: a switcher dropdown instead of
 the rail (the list is one click away; rejected), the selected environment
@@ -72,8 +72,8 @@ in the title bar) are replaced as follows.
    underneath in bb's order. Only environments with terminals (running, or
    ended and not yet dismissed) are listed; a project with none is not
    listed. Each environment shows its name and its number of running
-   terminals. A leading `bb/` is left out of the name; the full name shows on
-   hover.
+   terminals. Names are shown as bb shows them, truncated when long, with
+   the full name on hover.
 2. **An environment is always selected.** There is no "All environments"
    and no project-wide view. The page opens on the environment of the thread
    bb was showing, if it has terminals; else the environment the page last
