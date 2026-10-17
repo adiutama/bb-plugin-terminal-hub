@@ -3,7 +3,8 @@
 A [BB](https://getbb.app) plugin that adds a **Terminals** page: one place to
 see and control every terminal running in a checkout or worktree, whichever
 thread or agent started it. It sits alongside BB's per-thread terminals and
-does not replace them.
+does not replace them. A **Services** page lists the servers running in your
+checkouts outside bb terminals, such as ones agents started detached.
 
 Requires bb 0.46 or later.
 
@@ -16,7 +17,8 @@ npm install
 bb plugin install .
 ```
 
-bb builds the page on install. A **Terminals** entry appears in the rail.
+bb builds the pages on install. **Terminals** and **Services** entries appear
+in the rail.
 
 ## Use
 
@@ -72,17 +74,46 @@ view.
 Terminal Hub sits alongside bb's own terminals and leaves the thread sidebar
 alone.
 
+### Services
+
+Agents often start servers detached (`nohup … &`, a database's own daemon) so
+they outlive the session; those never show up as terminals. Open **Services**
+from the rail to see them: every process on this machine that listens on a TCP
+port and belongs to one of your environments, either because an agent of that
+environment started it (bb's `BB_ENVIRONMENT_ID` variable) or because it runs
+inside the environment's folder. Processes running in a bb terminal are left
+to the Terminals page.
+
+- One table, grouped under `project › environment`: each process's ports,
+  command line, the thread that started it (a link to it), PID, and how long
+  it has been up. **Find** narrows the rows by port, command, PID, or name.
+- Click a row to read its log (the last 64 KB of the file its output goes to)
+  in a drawer below the table, kept at the end as it grows. **×** closes it.
+- Each row can **Open** its port at `http://127.0.0.1:<port>`, **Copy** its PID,
+  command line, or a port, and **Stop** it. Stop asks first and says how many
+  processes it signals: a launch such as `npm run dev` started in its own
+  process group is stopped as a whole, so a watcher cannot restart the server.
+  If it is still running 5 seconds later, **Force stop** sends SIGKILL. Before
+  any signal, the process is checked to still be the one listed.
+- The list refreshes every 5 seconds while the page is shown. Environments on
+  another machine are shown as not checked. It needs `lsof` (macOS and Linux);
+  without it the page says so.
+
 ### For agents
 
 The plugin ships a skill that tells agents to start dev servers and watchers
 as environment terminals (`bb terminal create --environment … --title …`),
 to check what is already running first, and to leave them running when done.
-Agents and you can list an environment's terminals from the command line:
+Agents and you can list an environment's terminals, and the servers running
+outside them, from the command line; the skill tells agents to check both
+before starting a server:
 
 ```sh
 bb terminal-hub list                      # the calling thread's environment
 bb terminal-hub list --environment env_…  # any environment
 bb terminal-hub list --json               # id, title, status, scope, thread, serverHint
+bb terminal-hub services                  # what the Services page lists for it
+bb terminal-hub services --json           # pid, ports, command, startedAt, threadId, logPath
 ```
 
 ## Contributing
