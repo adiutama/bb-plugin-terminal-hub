@@ -47,6 +47,11 @@ agents start?
 - Reading another process's environment works for the user's own processes
   (`ps eww` on macOS; `/proc/<pid>/environ` on Linux). Not checked for
   processes of other users or with a hardened runtime.
+- Added after review: macOS hides the environment of Apple-signed programs.
+  `FOO_PROBE=1 /bin/sleep 30` shows no `FOO_PROBE` in `ps eww`;
+  `FOO_PROBE=1 node -e …` (mise) does. So `BB_TERMINAL_SESSION_ID` cannot be
+  relied on for `/bin/zsh`, `/usr/bin/python3` and the like; ADR
+  202610171802 adds the controlling terminal as a second sign.
 
 ## Consequences
 

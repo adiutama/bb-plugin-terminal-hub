@@ -1,9 +1,9 @@
 # Find services by the bb variables they inherit, show the thread that started them, and stop the launch's own group
 
-- Status: accepted
+- Status: superseded
 - Date: 2026-10-17
 - Supersedes: 202610171641
-- Superseded by: none
+- Superseded by: 202610171802
 - Applies to: docs/specs/services.md, docs/specs/navigation.md, docs/specs/agent-surface.md, server.ts, app.tsx, skills/terminal-hub/SKILL.md, README.md
 
 ## Context
