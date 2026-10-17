@@ -1,9 +1,9 @@
 # Closable tabs in creation order, terminal-manager shortcuts, and less chrome
 
-- Status: accepted
+- Status: superseded
 - Date: 2026-10-17
 - Supersedes: 202610171354, 202610100903
-- Superseded by: none
+- Superseded by: 202610171604
 - Applies to: docs/specs/session-list.md, docs/specs/navigation.md, docs/specs/actions.md, app.tsx, components/terminals-page.tsx, components/header-count.tsx, components/terminal-bar.tsx, lib/actions.ts, README.md
 
 ## Context
