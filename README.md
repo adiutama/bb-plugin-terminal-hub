@@ -30,12 +30,14 @@ view.
 - The page opens on the environment of the thread you came from, if something
   runs there; else on the one it last showed; else on the first listed. Each
   environment remembers its last tab until bb reloads.
-- Click a project's name to fold it. Point at it to show **+**: its **New
-  terminal in…** menu lists every environment of the project, including the
-  ones where nothing runs yet, and starts a shell there. The **+** after the
-  last tab starts one in the selected environment. With nothing running
-  anywhere, the page offers **New terminal in…** with every project's
-  environments.
+- **+** beside **Find environment** opens **New terminal in…** with every
+  project's environments, including the ones where nothing runs yet (but not
+  ones whose folder is gone); the page offers the same when nothing runs
+  anywhere. Point at a project's name to show its own **+** for just its
+  environments; click the name to fold the project. Each **New terminal in…**
+  opens with a search field: type part of an environment or project name,
+  move with **↑** and **↓**, and press **Enter** to start a shell there. The
+  **+** after the last tab starts one in the selected environment.
 - Tabs are in the order the terminals were started, so a new shell is always
   the rightmost tab, whether you, a thread, or an agent started it. A tab
   shows the title and, for a running server, its port (`:3000`). A terminal
@@ -45,9 +47,9 @@ view.
   dismisses the tab.
 - **Find environment** at the top of the rail narrows it to environments whose
   name, project, terminal titles, ports, or threads contain every word you
-  type, so `5173` finds where vite runs. Press **/** while the page has focus
-  to jump to it, **↓** to move into the rail, **Enter** to open the first
-  match, and **Esc** to clear it.
+  type, so `5173` finds where vite runs. In it, **↓** moves into the rail,
+  **Enter** opens the first match, and **Esc** clears it. The page binds no
+  other keys, so ⌘T, ⌘W, ⌘P and the rest keep bb's meaning.
 - The bar above the terminal shows its title (and exit code once it ended);
   under it, the project, environment and starting folder, the thread that owns
   it as a link (with its state when it is not active, like `idle 2h`), and the
@@ -66,21 +68,6 @@ view.
   nothing claims a terminal is missing. A reload starts fresh.
 - The URL names the project, environment, and terminal, so reloads, links, and
   back/forward return to the same shell.
-
-### Shortcuts
-
-While the Terminals page is shown, even with focus in the terminal (`⌘` is
-Ctrl outside macOS):
-
-| Keys | Does |
-| --- | --- |
-| **⌘T** | New terminal in the selected environment |
-| **⌘W** | Close the selected terminal (or dismiss it once ended) |
-| **⌘P** | Jump to Find environment |
-| **/** | Jump to Find environment (when not typing) |
-
-On every other page these keys keep bb's meaning, and **⌘K** is always bb's
-thread switcher. The page leaves them alone while a dialog or menu is open.
 
 Terminal Hub sits alongside bb's own terminals and leaves the thread sidebar
 alone.

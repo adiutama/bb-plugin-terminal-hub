@@ -47,12 +47,13 @@ useSdk().terminals ◄──► lib/terminal-transport.ts ◄──► lib/pump.
 | `lib/server-hint.ts`, `lib/paths.ts`, `lib/time.ts` | Details: server address, the bar's folder and `~`, "2h". |
 | `lib/terminal-transport.ts` | The pump's reads, writes, and resizes over `useSdk().terminals`. |
 | `lib/cli.ts` | `bb terminal-hub list`: text and JSON over the same inventory. |
-| `components/terminals-page.tsx` | Routing and selection, actions and dialogs, the page's shortcuts (LIST-47); lays out the rail, tabs, bar, and view. |
-| `components/environment-rail.tsx` | The rail: find field, project headers with "New terminal in…", environments, keyboard, scroll memory. |
+| `components/terminals-page.tsx` | Routing and selection, actions and dialogs; lays out the rail, tabs, bar, and view. |
+| `components/environment-rail.tsx` | The rail: find field and its `+`, project headers with their `+`, environments, keyboard, scroll memory. |
+| `components/new-terminal-menu.tsx` | "New terminal in…": a searchable list of environments for one project or all (LIST-50). |
 | `components/terminal-tabs.tsx` | The selected environment's tabs with their ×, and the `+` after them. |
 | `components/terminal-bar.tsx` | The two-line bar above the terminal, with its actions. |
 | `components/terminal-view.tsx` | Hosts one pump with find and the exit/status banner. |
-| `components/empty-pane.tsx` | The pane with nothing to show, and "New terminal in…" for every project's environments. |
+| `components/empty-pane.tsx` | The pane with nothing to show. |
 
 Refresh: every project's store runs while the page is visible. Environment
 terminals send no signal, so the selected environment's own list is polled
@@ -77,12 +78,6 @@ while away, then list in full. Every write to a list carries the sequence
 number of the request (or action) that produced it, so a late answer never
 replaces newer data.
 
-Shortcuts: while it is mounted, the page listens for `keydown` on `window` in
-the capture phase, so Mod+T, Mod+W and Mod+P reach it before bb's global
-shortcuts and before the terminal view; it stops them there
-(`preventDefault`, `stopImmediatePropagation`). Unmounting the page removes
-the listener, so elsewhere bb keeps those keys.
-
 ## Terminal engine
 
 Ported from Floating Ghostty (ADR 202610100910). Each file keeps its upstream
@@ -101,6 +96,6 @@ behaviour unless a spec says otherwise.
 | `lib/terminal-title.ts` | Passive OSC 0/2/7 observer. |
 | `lib/terminal-presentation.ts` | Cursor shape and OSC 10/11 colour replies. |
 | `lib/terminal-selection.ts` | Plain text of retained cells for select-all. |
-| `lib/keyboard.ts` | Keeps terminal keys from reaching bb's global shortcuts; matches the page's `/` and Mod+T, Mod+W, Mod+P. |
+| `lib/keyboard.ts` | Keeps terminal keys from reaching bb's global shortcuts. |
 | `lib/pump.ts` | Replay, polling, input, focus-gated resizing, search. |
 | `styles.css`, `fonts/` | Renderer CSS and the inline Nerd Font symbols fallback. |
