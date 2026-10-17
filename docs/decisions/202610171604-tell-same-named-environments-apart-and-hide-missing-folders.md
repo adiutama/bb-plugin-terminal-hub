@@ -1,9 +1,9 @@
 # Tell same-named environments apart, and offer only environments whose folder exists
 
-- Status: accepted
+- Status: superseded
 - Date: 2026-10-17
 - Supersedes: 202610171551
-- Superseded by: none
+- Superseded by: 202610171617
 - Applies to: docs/specs/session-list.md, docs/specs/terminal-view.md, components/terminals-page.tsx, lib/hub-store.ts, README.md
 
 ## Context
