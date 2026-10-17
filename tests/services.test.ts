@@ -1,0 +1,423 @@
+import { afterEach, describe, expect, it } from "vitest";
+import { parseFiles, parseListeners, parseProcesses } from "../lib/processes";
+import { LOG_TAIL_BYTES } from "../lib/services";
+import { STARTED_AT } from "./fixtures/fake-host";
+import {
+  disposeServers,
+  servicesMachine,
+  servicesWorld,
+  startServer,
+  WORKTREE,
+} from "./fixtures/services-world";
+
+afterEach(disposeServers);
+
+const API_STARTED = Date.parse("Sat Oct 17 20:19:50 2026");
+
+async function listed() {
+  const server = await startServer(servicesWorld(), servicesMachine());
+  const list = await server.call("services.list");
+  return { server, list };
+}
+
+const pids = (list: any) =>
+  list.groups.flatMap((group: any) => group.services.map((service: any) => service.pid));
+
+describe("services: what is listed", () => {
+  it("SVC-2: lists a listener by its BB_ENVIRONMENT_ID, else by the environment folder holding its working folder", async () => {
+    const { list } = await listed();
+    const wt = list.groups.find((g: any) => g.environmentId === "env_wt");
+    // Postgres runs in its data folder, outside every environment: found by its variable.
+    expect(wt.services.map((s: any) => s.pid)).toEqual([33438, 48345]);
+    // Started by hand, without bb variables: found by its folder, inside the environment's.
+    const hub = list.groups.find((g: any) => g.environmentId === "env_b");
+    expect(hub.services.map((s: any) => s.pid)).toEqual([51002]);
+    // In no environment's folder, and no variable: not listed.
+    expect(pids(list)).not.toContain(700);
+  });
+
+  it("SVC-2: a variable naming an environment bb does not know falls back to the folder", async () => {
+    const m = servicesMachine();
+    m.processes.push({
+      pid: 900,
+      command: "python3 -m http.server 8000",
+      cwd: "/Users/me/repo/docs",
+      env: { BB_ENVIRONMENT_ID: "env_gone", BB_THREAD_ID: "thr_gone" },
+      ports: [8000],
+    });
+    const server = await startServer(servicesWorld(), m);
+    const list = await server.call("services.list");
+    const main = list.groups.find((g: any) => g.environmentId === "env_a");
+    expect(main.services.map((s: any) => s.pid)).toEqual([900]);
+  });
+
+  it("SVC-2: when its environment cannot be read, only the folder applies", async () => {
+    const m = servicesMachine();
+    m.processes.push(
+      {
+        pid: 901,
+        command: "ruby server.rb",
+        cwd: `${WORKTREE}/api`,
+        env: null,
+        ports: [4567],
+      },
+      { pid: 902, command: "redis-server", cwd: "/opt/redis", env: null, ports: [6379] },
+    );
+    const server = await startServer(servicesWorld(), m);
+    const list = await server.call("services.list");
+    const wt = list.groups.find((g: any) => g.environmentId === "env_wt");
+    expect(wt.services.map((s: any) => s.pid)).toContain(901);
+    expect(pids(list)).not.toContain(902);
+  });
+
+  it("SVC-2: reads /proc/<pid>/environ on Linux, and the folder rule where it cannot", async () => {
+    const m = servicesMachine();
+    m.platform = "linux";
+    const server = await startServer(servicesWorld(), m);
+    const list = await server.call("services.list");
+    expect(pids(list)).toEqual(expect.arrayContaining([33438, 48345, 51002]));
+    expect(server.calls.some((call) => call.args[0] === "eww")).toBe(false);
+  });
+
+  it("SVC-3: a process with BB_TERMINAL_SESSION_ID is not listed", async () => {
+    const { list } = await listed();
+    expect(pids(list)).not.toContain(51000);
+  });
+
+  it("SVC-20: a process listening only on Unix sockets is not listed; only TCP listeners are asked for", async () => {
+    const { server, list } = await listed();
+    expect(pids(list)).not.toContain(800);
+    const scan = server.calls.find((call) => call.command === "lsof");
+    expect(scan?.args).toEqual(["-nP", "-iTCP", "-sTCP:LISTEN", "-F", "pcn"]);
+  });
+
+  it("SVC-4: each process once, with its ports ascending, its command line, PID, and start time", async () => {
+    const { list } = await listed();
+    const hub = list.groups.find((g: any) => g.environmentId === "env_b");
+    expect(hub.services).toEqual([
+      {
+        pid: 51002,
+        ports: [5173, 24678],
+        command: "node node_modules/.bin/vite",
+        startedAt: Date.parse("Sat Oct 17 23:40:00 2026"),
+        environmentId: "env_b",
+        threadId: null,
+        threadTitle: null,
+        logPath: null,
+      },
+    ]);
+  });
+
+  it("SVC-18: a process whose BB_THREAD_ID names a thread bb knows carries its title; an unknown thread none", async () => {
+    const m = servicesMachine();
+    m.processes.push({
+      pid: 903,
+      command: "node old.js",
+      cwd: "/Users/me/repo",
+      env: { BB_THREAD_ID: "thr_deleted" },
+      ports: [3001],
+    });
+    const server = await startServer(servicesWorld(), m);
+    const list = await server.call("services.list");
+    const all = list.groups.flatMap((g: any) => g.services);
+    expect(all.find((s: any) => s.pid === 48345)).toMatchObject({
+      threadId: "thr_map",
+      threadTitle: "Map all page URLs",
+    });
+    expect(all.find((s: any) => s.pid === 903)).toMatchObject({
+      threadId: "thr_deleted",
+      threadTitle: null,
+    });
+  });
+
+  it("SVC-14: groups follow bb's project and environment order, named as LIST-34 names them, and only environments with a process", async () => {
+    const { list } = await listed();
+    expect(
+      list.groups.filter((g: any) => g.checked).map((g: any) => [g.projectName, g.environmentName]),
+    ).toEqual([
+      ["kai-platform", "bb/map-all-page-urls"],
+      ["terminal-hub", "main"],
+    ]);
+  });
+
+  it("SVC-11: environments on another host are listed as not checked, without looking at their processes", async () => {
+    const { list } = await listed();
+    expect(list.groups.find((g: any) => g.environmentId === "env_remote")).toEqual({
+      projectId: "proj_1",
+      projectName: "kai-platform",
+      environmentId: "env_remote",
+      environmentName: "remote-box",
+      checked: false,
+      services: [],
+    });
+  });
+
+  it("SVC-11: the machine running bb is bb's primary host; when bb does not say, no environment is checked", async () => {
+    const server = await startServer(servicesWorld({ localHostId: null }), servicesMachine());
+    const list = await server.call("services.list");
+    expect(list.groups.every((g: any) => !g.checked && g.services.length === 0)).toBe(true);
+  });
+
+  it("SVC-12: where lsof is not installed, the list says detection is unavailable", async () => {
+    const m = servicesMachine();
+    m.lsof = false;
+    const server = await startServer(servicesWorld(), m);
+    expect(await server.call("services.list")).toEqual({
+      available: false,
+      groups: [],
+      error: null,
+    });
+  });
+});
+
+describe("services: stopping", () => {
+  it("SVC-8: re-checks the PID's start time, then sends SIGTERM", async () => {
+    const { server } = await listed();
+    expect(
+      await server.call("services.stop", { pid: 33438, startedAt: STARTED_AT, force: false }),
+    ).toEqual({ outcome: "signalled", count: 1 });
+    // Postgres leads its own group (SVC-19).
+    expect(server.kills).toEqual([{ target: -33438, signal: "SIGTERM" }]);
+  });
+
+  it("SVC-8: a PID now running something that started at another time is not signalled", async () => {
+    const { server } = await listed();
+    // The PID was reused after the scan.
+    const pg = server.machine.processes.find((p) => p.pid === 33438)!;
+    pg.start = "Sun Oct 18 09:00:00 2026";
+    expect(
+      await server.call("services.stop", { pid: 33438, startedAt: STARTED_AT, force: false }),
+    ).toEqual({ outcome: "changed" });
+    expect(await server.call("services.plan", { pid: 33438, startedAt: STARTED_AT })).toEqual({
+      outcome: "changed",
+    });
+    expect(server.kills).toEqual([]);
+  });
+
+  it("SVC-13: a PID the latest scan did not list is never signalled", async () => {
+    const { server } = await listed();
+    for (const pid of [700, 800, 51000, 48265, 12345]) {
+      expect(
+        await server.call("services.stop", { pid, startedAt: STARTED_AT, force: true }),
+      ).toEqual({ outcome: "changed" });
+    }
+    // Listed once, but not by the latest scan.
+    server.machine.processes = server.machine.processes.filter((p) => p.pid !== 33438);
+    await server.call("services.list");
+    server.machine.processes.push({ pid: 33438, command: "postgres", env: {} });
+    expect(
+      await server.call("services.stop", { pid: 33438, startedAt: STARTED_AT, force: false }),
+    ).toEqual({ outcome: "changed" });
+    expect(server.kills).toEqual([]);
+  });
+
+  it("SVC-13: nothing is signalled before a scan has listed it", async () => {
+    const server = await startServer(servicesWorld(), servicesMachine());
+    expect(
+      await server.call("services.stop", { pid: 33438, startedAt: STARTED_AT, force: false }),
+    ).toEqual({ outcome: "changed" });
+    expect(server.kills).toEqual([]);
+  });
+
+  it("SVC-19: a launch whose group leader is gone is stopped as a group, launcher and watcher included", async () => {
+    const { server } = await listed();
+    expect(await server.call("services.plan", { pid: 48345, startedAt: API_STARTED })).toEqual({
+      outcome: "ready",
+      scope: "group",
+      commands: [
+        "npm run dev",
+        "npm exec tsx watch apps/api/src/main.ts",
+        "/usr/local/bin/node apps/api/src/main.ts",
+      ],
+    });
+    expect(
+      await server.call("services.stop", { pid: 48345, startedAt: API_STARTED, force: false }),
+    ).toEqual({ outcome: "signalled", count: 3 });
+    expect(server.kills).toEqual([{ target: -48263, signal: "SIGTERM" }]);
+    expect(server.machine.processes.some((p) => p.pgid === 48263)).toBe(false);
+  });
+
+  it("SVC-19: a listener leading its own group signals the group", async () => {
+    const { server } = await listed();
+    const plan = await server.call("services.plan", {
+      pid: 51002,
+      startedAt: Date.parse("Sat Oct 17 23:40:00 2026"),
+    });
+    expect(plan).toMatchObject({
+      outcome: "ready",
+      scope: "group",
+      commands: [expect.any(String)],
+    });
+  });
+
+  it("SVC-19: a group whose leader belongs to the same environment is signalled whole", async () => {
+    const m = servicesMachine();
+    m.processes.push(
+      { pid: 960, pgid: 960, command: "zsh -c pnpm dev", env: agentEnv(), cwd: "/tmp" },
+      {
+        pid: 961,
+        pgid: 960,
+        command: "node dev.js",
+        env: agentEnv(),
+        cwd: "/Users/me/repo",
+        ports: [3000],
+      },
+    );
+    const server = await startServer(servicesWorld(), m);
+    await server.call("services.list");
+    expect(await server.call("services.plan", { pid: 961, startedAt: STARTED_AT })).toMatchObject({
+      scope: "group",
+      commands: ["zsh -c pnpm dev", "node dev.js"],
+    });
+  });
+
+  it("SVC-19: only the listener when the leader is in another environment, unknown, or a group member has BB_TERMINAL_SESSION_ID", async () => {
+    const m = servicesMachine();
+    m.processes.push(
+      // Leader belongs to another environment.
+      { pid: 970, pgid: 970, command: "make dev", cwd: "/Users/me/hub", env: {} },
+      { pid: 971, pgid: 970, command: "node a.js", cwd: "/Users/me/repo", env: {}, ports: [3010] },
+      // Leader belongs to no environment.
+      { pid: 980, pgid: 980, command: "login shell", cwd: "/", env: {} },
+      { pid: 981, pgid: 980, command: "node b.js", cwd: "/Users/me/repo", env: {}, ports: [3020] },
+      // A member runs in a bb terminal.
+      {
+        pid: 991,
+        pgid: 990,
+        command: "node c.js",
+        cwd: "/Users/me/repo",
+        env: {},
+        ports: [3030],
+      },
+      { pid: 992, pgid: 990, command: "tail -f log", env: { BB_TERMINAL_SESSION_ID: "term_9" } },
+    );
+    const server = await startServer(servicesWorld(), m);
+    await server.call("services.list");
+    for (const pid of [971, 981, 991]) {
+      expect(await server.call("services.plan", { pid, startedAt: STARTED_AT })).toEqual({
+        outcome: "ready",
+        scope: "process",
+        commands: [expect.stringMatching(/^node /)],
+      });
+    }
+    expect(
+      await server.call("services.stop", { pid: 991, startedAt: STARTED_AT, force: false }),
+    ).toEqual({ outcome: "signalled", count: 1 });
+    expect(server.kills).toEqual([{ target: 991, signal: "SIGTERM" }]);
+  });
+
+  it("SVC-19: never this server's own process group", async () => {
+    const m = servicesMachine();
+    m.selfPid = 1500;
+    m.processes.push(
+      { pid: 1500, pgid: 1400, command: "bb server", env: {} },
+      {
+        pid: 1401,
+        pgid: 1400,
+        command: "node x.js",
+        cwd: "/Users/me/repo",
+        env: {},
+        ports: [3040],
+      },
+    );
+    const server = await startServer(servicesWorld(), m);
+    await server.call("services.list");
+    expect(await server.call("services.plan", { pid: 1401, startedAt: STARTED_AT })).toMatchObject({
+      scope: "process",
+    });
+  });
+
+  it("SVC-9: Force stop sends SIGKILL after the same identity check", async () => {
+    const m = servicesMachine();
+    m.processes.find((p) => p.pid === 33438)!.ignoresTerm = true;
+    const server = await startServer(servicesWorld(), m);
+    await server.call("services.list");
+    await server.call("services.stop", { pid: 33438, startedAt: STARTED_AT, force: false });
+    await server.call("services.list");
+    expect(
+      await server.call("services.stop", { pid: 33438, startedAt: STARTED_AT, force: true }),
+    ).toEqual({ outcome: "signalled", count: 1 });
+    expect(server.kills).toEqual([
+      { target: -33438, signal: "SIGTERM" },
+      { target: -33438, signal: "SIGKILL" },
+    ]);
+    expect(
+      await server.call("services.stop", { pid: 33438, startedAt: STARTED_AT + 1000, force: true }),
+    ).toEqual({ outcome: "changed" });
+  });
+});
+
+describe("services: logs", () => {
+  it("SVC-5: reads the last 64 KB of the listed process's log file, starting at a whole line", async () => {
+    const m = servicesMachine();
+    const line = `${"x".repeat(99)}\n`;
+    m.files["/Users/me/.agents/pg.log"] = `${line.repeat(700)}last line\n`;
+    const server = await startServer(servicesWorld(), m);
+    await server.call("services.list");
+    const log = await server.call("services.log", { pid: 33438, startedAt: STARTED_AT });
+    expect(log.outcome).toBe("log");
+    expect(log.path).toBe("/Users/me/.agents/pg.log");
+    expect(log.text.length).toBeLessThanOrEqual(LOG_TAIL_BYTES);
+    expect(log.text.startsWith("x")).toBe(true);
+    expect(log.text.endsWith("last line\n")).toBe(true);
+  });
+
+  it("SVC-5: a process whose standard output is not a regular file has no log", async () => {
+    const { server } = await listed();
+    expect(
+      await server.call("services.log", {
+        pid: 51002,
+        startedAt: Date.parse("Sat Oct 17 23:40:00 2026"),
+      }),
+    ).toEqual({ outcome: "none" });
+  });
+
+  it("SVC-16: a process the latest scan no longer lists has ended", async () => {
+    const { server } = await listed();
+    server.machine.processes = server.machine.processes.filter((p) => p.pid !== 33438);
+    await server.call("services.list");
+    expect(await server.call("services.log", { pid: 33438, startedAt: STARTED_AT })).toEqual({
+      outcome: "ended",
+    });
+  });
+});
+
+describe("services: reading lsof and ps", () => {
+  it("SVC-2, SVC-4: parses listeners, processes, and files as lsof and ps print them", () => {
+    expect(
+      parseListeners("p947\ncrapportd\nf12\nn*:61183\nf13\nn*:61183\nf22\nn127.0.0.1:50480\n"),
+    ).toEqual(new Map([[947, new Set([61183, 50480])]]));
+    expect(
+      parseProcesses(
+        "33438 33438 Sat Oct 17 20:16:31 2026     /opt/postgres -D /pg\n 7809  7767 Thu Oct  1 22:23:04 2026     node x\n",
+      ),
+    ).toEqual([
+      {
+        pid: 33438,
+        pgid: 33438,
+        startedAt: Date.parse("Sat Oct 17 20:16:31 2026"),
+        command: "/opt/postgres -D /pg",
+      },
+      {
+        pid: 7809,
+        pgid: 7767,
+        startedAt: Date.parse("Thu Oct 1 22:23:04 2026"),
+        command: "node x",
+      },
+    ]);
+    expect(
+      parseFiles(
+        "p33438\nfcwd\ntDIR\nn/pg\nf1\ntREG\nn/pg.log\np48345\nfcwd\ntDIR\nn/wt\nf1\ntCHR\nn/dev/null\n",
+      ),
+    ).toEqual(
+      new Map([
+        [33438, { cwd: "/pg", log: "/pg.log" }],
+        [48345, { cwd: "/wt", log: null }],
+      ]),
+    );
+  });
+});
+
+function agentEnv() {
+  return { BB_ENVIRONMENT_ID: "env_a", BB_THREAD_ID: "thr_x" };
+}

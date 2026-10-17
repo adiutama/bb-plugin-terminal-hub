@@ -30,6 +30,8 @@ export interface World {
   missingFolders?: string[];
   /** Folders the host cannot read (`hosts.directory` says EACCES). */
   unreadableFolders?: string[];
+  /** `system.config().primaryHostId`: the host bb runs on; host_1 unless set. */
+  localHostId?: string | null;
 }
 
 let seq = 0;
@@ -237,6 +239,11 @@ export function fakeSdk(w: World) {
       ),
     },
     projects: { list: vi.fn(async () => w.projects) },
+    system: {
+      config: vi.fn(async () => ({
+        primaryHostId: w.localHostId === undefined ? "host_1" : w.localHostId,
+      })),
+    },
     hosts: {
       directory: vi.fn(async ({ hostId, path }: { hostId: string; path?: string }) => {
         const home = w.homes[hostId];
