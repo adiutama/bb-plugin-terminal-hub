@@ -20,63 +20,49 @@ bb builds the page on install. A **Terminals** entry appears in the rail.
 
 ## Use
 
-Open **Terminals** from the rail. Pick a project, then an environment (a
-checkout or worktree), or keep **All environments** to see the whole project
-at once; both pickers sit on one line at the top, `project / environment`.
-The title bar shows how many terminals are running, and a line above the list
-sums up what is running and how many are serving a local address. When
-terminals were left running by threads that are no longer active, **Clean up
-N stale** at the end of that line closes them, after asking.
+Open **Terminals** from the rail. On the left, every project lists its
+environments (checkouts and worktrees) that have terminals, in bb's order and
+under the project's name, as bb's own sidebar groups them. Each environment
+shows its name as bb shows it (`main`, `bb/map-all-page-urls`) and how many
+terminals run there. Pick one: its terminals become tabs above the terminal
+view. The title bar says where you are, `project / environment`, and how many
+terminals run there.
 
-- **All environments** shows a section only for environments that have
-  terminals, running or just exited. Reach an empty one through the
-  environment picker, **New terminal**'s **▾** menu, or the filter. Until the
-  first scan of the project's threads finishes, the list shows its progress.
-- **New terminal** starts a shell in the selected environment (in All, the
-  selected terminal's), and says which one ("in main"). Its **▾** menu starts
-  one in any environment of the project, including the empty ones.
-- The **filter** above the list narrows it to terminals whose title,
-  environment, thread, directory, or server address contains every word you
-  type, so `3000` finds the dev server. Empty environments whose name matches
-  are listed too. Press **/** while the page has focus to jump to it, **↓**
-  and **↑** to move through the rows, **Enter** to open one, and **Esc** to
-  clear the filter. The filter is not kept in the URL, so a reload starts
-  with the full list.
-- Leave the page, to open a thread for example, and come back: the list is
-  there at once, scrolled where it was, with the same sections collapsed and
-  the same filter, and the rail brings you back to the terminal you had open.
-  Until it has checked again, the summary line and the title bar say **Last
-  known**, and nothing claims a terminal is missing. A terminal that exited
-  meanwhile keeps its row with the exit code until you dismiss it. A reload
-  starts fresh.
-- End a shell from its view (`exit`, Ctrl-D, or Ctrl-C on its process) and
-  its row goes away, with the next terminal selected. A terminal that exits on
-  its own, or from somewhere else, keeps its row and exit code so you notice.
-
-- **Environment** lists the environment's own terminals: the ones you start
-  here with **New terminal**, and the ones agents start for long-running
-  processes. They are shared by every thread and outlive any one of them.
-- **From threads** lists terminals started from a thread's sidebar or by an
-  agent, with the thread's title and state. A terminal still running after its
-  thread went idle, errored, or was archived gets an amber dot and a warning
-  saying how long ago that happened. The two headings show only when an
-  environment has both kinds.
-- Each row starts with a status dot (green running, amber stale, a ring once
-  exited, red if it failed), then its title, a local server address such as
-  `:3000` when one appears in its output, the exit code once exited, and its
-  starting directory.
-- Select a row to see the terminal live, rendered with Ghostty's engine. Click
-  into it to type; only the view you are typing in resizes the shell, so the
-  same terminal open in a thread's sidebar keeps its size until then.
-  **Cmd/Ctrl+F** searches its scrollback.
-- The bar above the terminal shows its title and environment, a link that
-  opens its server address in a new tab, **Restart shell**, and a **⋯** menu
-  to **Rename** or **Close** it.
-- Each row's **⋯** menu can **Rename**, **Restart shell**, or **Close** it; it
-  and the row's **×** show when you point at the row, focus it, or select it,
-  and always on touch screens. Closing a thread's terminal asks first.
-  **Clean up N stale** checks the list again before it asks, and once more
-  before closing each terminal, so nothing that came back to life is closed.
+- The page opens on the environment of the thread you came from, if something
+  runs there; else on the one it last showed; else on the first listed. Each
+  environment remembers its last tab until bb reloads.
+- Click a project's name to fold it. Point at it to show **+**: its **New
+  terminal in…** menu lists every environment of the project, including the
+  ones where nothing runs yet, and starts a shell there. The **+** after the
+  last tab starts one in the selected environment.
+- Tabs list the environment's own terminals first (the ones you start here,
+  and the ones agents start for long-running processes), then the ones started
+  from threads, each oldest first. A tab shows the title and, for a running
+  server, its port (`:3000`). A terminal that ended keeps a dimmed tab with its
+  exit code until you dismiss it.
+- **Find environment** at the top of the rail narrows it to environments whose
+  name, project, terminal titles, ports, or threads contain every word you
+  type, so `5173` finds where vite runs. Press **/** while the page has focus
+  to jump to it, **↓** to move into the rail, **Enter** to open the first
+  match, and **Esc** to clear it. **⌘K** stays bb's thread switcher.
+- The bar above the terminal shows its title (and exit code once it ended);
+  under it, the project, environment and starting folder, the thread that owns
+  it as a link (with its state when it is not active, like `idle 2h`), and the
+  thread that spawned that one. On the right: the server address as a link,
+  **Restart shell**, and a **⋯** menu to **Rename**, **Close** (or
+  **Dismiss**), and **Close terminals from settled threads…** in this
+  environment. Closing a thread's terminal asks first; the cleanup lists the
+  environment again before it asks, and checks each terminal once more before
+  closing it, so nothing that came back to life is closed.
+- The terminal is rendered live with Ghostty's engine. Click into it to type;
+  only the view you are typing in resizes the shell, so the same terminal open
+  in a thread's sidebar keeps its size until then. **Cmd/Ctrl+F** searches its
+  scrollback. End a shell from its view (`exit`, Ctrl-D, or Ctrl-C on its
+  process) and its tab goes, with the next one selected.
+- Leave the page, to open a thread for example, and come back: the rail and
+  tabs are there at once, scrolled and folded as you left them, with the same
+  find text. Until everything is checked again the title bar says **Last
+  known**, and nothing claims a terminal is missing. A reload starts fresh.
 - The URL names the project, environment, and terminal, so reloads, links, and
   back/forward return to the same shell.
 
