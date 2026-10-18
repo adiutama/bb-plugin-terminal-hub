@@ -1196,7 +1196,7 @@ function ConnectSection({ connect }: { connect: Extract<ConnectState, { outcome:
                 {credential.secret !== null ? (
                   <CopyButton
                     label={`Copy ${credential.label} secret`}
-                    icon="KeyRound"
+                    icon="Lock"
                     onCopy={() => copy(credential.secret ?? "", `the ${credential.label} secret`)}
                   />
                 ) : null}
@@ -1250,7 +1250,7 @@ function CopyButton({
       aria-label={label}
       onClick={() => void onCopy()}
     >
-      <Icon name={icon} aria-hidden="true" />
+      <Icon name={icon} fallback="Copy" aria-hidden="true" />
     </Button>
   );
 }
