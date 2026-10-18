@@ -3,10 +3,22 @@
 // signals through process.kill. Only the
 // server entry uses it; tests use recorded output instead.
 import { execFile } from "node:child_process";
+import type { BigIntStats } from "node:fs";
 import { constants } from "node:fs";
-import { access, open, readFile } from "node:fs/promises";
+import { access, lstat, open, readFile } from "node:fs/promises";
 import { basename, delimiter, join } from "node:path";
-import { CommandMissing, type ProcessHost } from "./processes";
+import { CommandMissing, type FileFacts, type ProcessHost } from "./processes";
+
+/** SVC-27: what a stat says, with device and inode kept exact. */
+function facts(stat: BigIntStats): FileFacts {
+  return {
+    kind: stat.isFile() ? "file" : stat.isSymbolicLink() ? "symlink" : "other",
+    dev: String(stat.dev),
+    ino: String(stat.ino),
+    uid: Number(stat.uid),
+    size: Number(stat.size),
+  };
+}
 
 /** bb started from the Dock may lack the system folders on its PATH. */
 const SYSTEM_DIRS = ["/usr/sbin", "/usr/bin", "/sbin", "/bin"];
@@ -88,30 +100,28 @@ export function nodeProcessHost(): ProcessHost {
     },
     readFile: (path) => readFile(path, "utf8"),
     uid: typeof process.getuid === "function" ? process.getuid() : null,
-    async readRegularFile(path, maxBytes) {
-      let handle: Awaited<ReturnType<typeof open>>;
+    async lstat(path) {
+      return facts(await lstat(path, { bigint: true }));
+    },
+    async readOpened(path, maxBytes) {
+      // SVC-27: never through a symlink, never blocking on a FIFO, never
+      // taking a terminal; readRecord has already checked lstat says a file.
+      const handle = await open(
+        path,
+        constants.O_RDONLY |
+          (constants.O_NOFOLLOW ?? 0) |
+          (constants.O_NONBLOCK ?? 0) |
+          (constants.O_NOCTTY ?? 0),
+      );
       try {
-        // SVC-27: never through a symlink, and never blocking on a FIFO.
-        handle = await open(
-          path,
-          constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0),
-        );
-      } catch (error) {
-        if ((error as { code?: unknown }).code === "ELOOP") return { kind: "symlink" };
-        throw error;
-      }
-      try {
-        const stat = await handle.stat();
-        if (!stat.isFile()) return { kind: "other" };
-        if (stat.size > maxBytes)
-          return { kind: "file", uid: stat.uid, size: stat.size, text: null };
-        // One byte more than allowed tells a file that grew since stat.
+        const opened = facts(await handle.stat({ bigint: true }));
+        if (opened.kind !== "file" || opened.size > maxBytes) return { ...opened, text: null };
+        // One byte more than allowed tells a file that grew since fstat.
         const buffer = Buffer.alloc(maxBytes + 1);
         const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
         return {
-          kind: "file",
-          uid: stat.uid,
-          size: Math.max(stat.size, bytesRead),
+          ...opened,
+          size: Math.max(opened.size, bytesRead),
           text: bytesRead > maxBytes ? null : buffer.subarray(0, bytesRead).toString("utf8"),
         };
       } finally {

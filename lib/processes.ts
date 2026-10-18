@@ -33,25 +33,29 @@ export interface ProcessHost {
   readFile(path: string): Promise<string>;
   /** SVC-27: this server's user id, to tell whose a record is; null where there is none. */
   uid: number | null;
+  /** SVC-27: what is at `path` itself, a symlink not followed (`lstat`). Opens nothing. */
+  lstat(path: string): Promise<FileFacts>;
   /**
-   * SVC-27: a file opened without following a symlink at its last component,
-   * with its owner and size; its text only when it is a regular file of at
-   * most `maxBytes` bytes. Rejects when it cannot be opened.
+   * SVC-27: opens `path` read-only without following a symlink, blocking on
+   * a FIFO, or taking a controlling terminal, and gives what the open file
+   * is (`fstat`) with its text when it is a regular file of at most
+   * `maxBytes` bytes (null otherwise). Rejects when it cannot be opened.
    */
-  readRegularFile(path: string, maxBytes: number): Promise<OpenedFile>;
+  readOpened(path: string, maxBytes: number): Promise<FileFacts & { text: string | null }>;
   /** Up to the last `bytes` bytes of a file, and whether it holds more. */
   readTail(path: string, bytes: number): Promise<{ text: string; truncated: boolean }>;
   /** A signal to a PID, or to a process group when `target` is negative. */
   kill(target: number, signal: "SIGTERM" | "SIGKILL"): void;
 }
 
-/** What `readRegularFile` found at a path. */
-export type OpenedFile =
-  | { kind: "symlink" }
-  /** A folder, a FIFO, a device: anything but a regular file. */
-  | { kind: "other" }
-  /** `text` is null when the file holds more than the bytes asked for. */
-  | { kind: "file"; uid: number; size: number; text: string | null };
+/** SVC-27: a file's type, identity (device and inode, as decimal strings), owner and size. */
+export interface FileFacts {
+  kind: "file" | "symlink" | "other";
+  dev: string;
+  ino: string;
+  uid: number;
+  size: number;
+}
 
 /** A process as `ps` lists it. */
 export interface ProcessInfo {

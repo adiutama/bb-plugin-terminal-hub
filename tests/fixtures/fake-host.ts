@@ -41,13 +41,17 @@ export interface Machine {
   uid?: number | null;
 }
 
-/** A file as `readRegularFile` finds it. */
+/** A file as `lstat` and `readOpened` find it. */
 export interface FakeFile {
-  /** A symlink, or not a regular file (a folder, a FIFO). */
+  /** A symlink, or not a regular file (a folder, a FIFO, a device). */
   kind?: "symlink" | "other";
   text?: string;
   /** Its owner; the server's user unless set. */
   uid?: number;
+  /** Replaced between lstat and open: the open file is another inode. */
+  swapped?: boolean;
+  /** A hung mount: the read never finishes. */
+  hangs?: boolean;
 }
 
 export const UID = 501;
@@ -73,8 +77,15 @@ const shortName = (command: string) => command.split(" ")[0]?.split("/").pop() ?
 export function fakeHost(m: Machine) {
   const kills: { target: number; signal: string }[] = [];
   const calls: { command: string; args: string[] }[] = [];
-  /** Paths `readRegularFile` opened. */
+  /** Paths `readOpened` opened. */
   const reads: string[] = [];
+  const fakeFile = (path: string): FakeFile => {
+    const found = m.records?.[path];
+    if (found === undefined) {
+      throw Object.assign(new Error(`ENOENT: ${path}`), { code: "ENOENT" });
+    }
+    return typeof found === "string" ? { text: found } : found;
+  };
   const asked = (args: readonly string[]) => {
     const pids = pidsOf(args);
     return m.processes.filter((p) => pids === null || pids.has(p.pid));
@@ -140,21 +151,28 @@ export function fakeHost(m: Machine) {
         .join("\0")}\0`;
     },
     uid: m.uid === undefined ? UID : m.uid,
-    async readRegularFile(path, maxBytes) {
+    async lstat(path) {
+      const file = fakeFile(path);
+      return {
+        kind: file.kind ?? "file",
+        dev: "1",
+        ino: "100",
+        uid: file.uid ?? UID,
+        size: Buffer.byteLength(file.text ?? ""),
+      };
+    },
+    async readOpened(path, maxBytes) {
       reads.push(path);
-      const found = m.records?.[path];
-      if (found === undefined) {
-        throw Object.assign(new Error(`ENOENT: ${path}`), { code: "ENOENT" });
-      }
-      const file: FakeFile = typeof found === "string" ? { text: found } : found;
-      if (file.kind === "symlink") return { kind: "symlink" };
-      if (file.kind === "other") return { kind: "other" };
+      const file = fakeFile(path);
+      if (file.hangs) return new Promise(() => {});
       const data = Buffer.from(file.text ?? "");
       return {
-        kind: "file",
+        kind: file.kind === "symlink" ? "other" : (file.kind ?? "file"),
+        dev: "1",
+        ino: file.swapped ? "200" : "100",
         uid: file.uid ?? UID,
         size: data.length,
-        text: data.length > maxBytes ? null : data.toString("utf8"),
+        text: file.kind || data.length > maxBytes ? null : data.toString("utf8"),
       };
     },
     async readTail(path, bytes) {

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { nodeProcessHost } from "../lib/process-host";
-import { RECORD_MAX_BYTES, readRecord } from "../lib/service-record";
+import { RECORD_MAX_BYTES, RECORD_TIMEOUT_MS, readRecord } from "../lib/service-record";
 import { STARTED_AT } from "./fixtures/fake-host";
 import {
   disposeServers,
@@ -210,8 +210,78 @@ describe("service record: reading it", () => {
   });
 });
 
+describe("service record: opening it safely", () => {
+  it("SVC-27: what lstat says is not a regular file, such as a device, is never opened", async () => {
+    const m = labelledMachine();
+    m.records = { [RECORD]: { kind: "other", text: "" } };
+    const { server, list } = await listedWith(m);
+    expect(byPid(list, 48345).set.title).toBeNull();
+    expect(server.reads).toEqual([]);
+    m.records = { [RECORD]: { kind: "symlink" } };
+    await server.call("services.list");
+    await server.call("services.connect", { pid: 48345, startedAt: API_STARTED });
+    expect(server.reads).toEqual([]);
+  });
+
+  it("SVC-27: a record replaced between lstat and open (another device or inode) is unreadable", async () => {
+    const m = labelledMachine({ text: valid(), swapped: true });
+    const { server, list } = await listedWith(m);
+    expect(server.reads).toEqual([RECORD]);
+    expect(byPid(list, 48345).set).toMatchObject({ record: RECORD, title: null });
+    expect(await server.call("services.connect", { pid: 48345, startedAt: API_STARTED })).toEqual({
+      outcome: "none",
+    });
+  });
+
+  it("SVC-27: a record whose read hangs is unreadable after 1 s, and the scan still returns with the other sets read", async () => {
+    const m = labelledMachine({ text: valid(), hangs: true });
+    m.processes.push({
+      pid: 61025,
+      command: "/opt/homebrew/bin/mailpit",
+      cwd: WORKTREE,
+      env: { BB_ENVIRONMENT_ID: "env_wt", ...labels("mail", OTHER_RECORD) },
+      ports: [1025],
+    });
+    m.records = { ...m.records, [OTHER_RECORD]: valid({ title: "Mail set" }) };
+    const started = Date.now();
+    const { list } = await listedWith(m);
+    const took = Date.now() - started;
+    expect(took).toBeGreaterThanOrEqual(RECORD_TIMEOUT_MS - 50);
+    expect(took).toBeLessThan(RECORD_TIMEOUT_MS + 900);
+    expect(byPid(list, 48345)).toMatchObject({ name: "api", set: { record: RECORD, title: null } });
+    expect(byPid(list, 61025).set.title).toBe("Mail set");
+  });
+});
+
+describe("service record: plain text", () => {
+  it("SVC-29: control characters and bidi controls are stripped from record strings, in the CLI and the list", async () => {
+    const record = recordJson({
+      title: "\u001b]0;pwned\u0007\u001b[31mred\u001b[0m set\u202e\u2066 \u009b2J",
+      case: "line one\nline\ttwo\u0000",
+      credentials: [{ label: "Log\u001b[2Kin", username: "u\u202eser", secret: "s\u001bcret" }],
+      services: [
+        { name: "api", urls: [{ label: "A\u0085pp", url: "http://127.0.0.1:1/\u001b[2J" }] },
+      ],
+    });
+    const { server, list } = await listedWith(labelledMachine(JSON.stringify(record)));
+    expect(byPid(list, 48345).set).toMatchObject({
+      title: "]0;pwned[31mred[0m set 2J",
+      case: "line one line two",
+    });
+    const text = (await server.runCli(["services", "--environment", "env_wt"])).stdout ?? "";
+    expect(text).toContain('    service api, set "]0;pwned[31mred[0m set 2J"');
+    expect(text).not.toMatch(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/);
+    expect(await server.call("services.connect", { pid: 48345, startedAt: API_STARTED })).toEqual({
+      outcome: "connect",
+      urls: [{ label: "App", url: "http://127.0.0.1:1/[2J" }],
+      // The secret is masked and copied as written.
+      credentials: [{ label: "Log[2Kin", username: "user", secret: "s\u001bcret" }],
+    });
+  });
+});
+
 describe("service record: on this machine's files", () => {
-  it("SVC-27: the server opens a record without following a symlink, never blocks on a FIFO, and reads at most 64 KiB", async () => {
+  it("SVC-27: the server checks a record with lstat before opening it, never follows a symlink, never blocks on a FIFO, and reads at most 64 KiB", async () => {
     const dir = await mkdtemp(join(tmpdir(), "th-record-"));
     try {
       const host = nodeProcessHost();
@@ -220,15 +290,27 @@ describe("service record: on this machine's files", () => {
       expect((await readRecord(host, file))?.title).toBe("kai-platform — multi-org access case");
       const link = join(dir, "link.json");
       await symlink(file, link);
-      expect(await host.readRegularFile(link, RECORD_MAX_BYTES)).toEqual({ kind: "symlink" });
+      expect(await host.lstat(link)).toMatchObject({ kind: "symlink" });
       expect(await readRecord(host, link)).toBeNull();
-      expect(await host.readRegularFile(dir, RECORD_MAX_BYTES)).toEqual({ kind: "other" });
+      // Even asked to, opening never follows the link.
+      await expect(host.readOpened(link, RECORD_MAX_BYTES)).rejects.toMatchObject({
+        code: "ELOOP",
+      });
+      expect(await host.lstat(dir)).toMatchObject({ kind: "other" });
       const fifo = join(dir, "fifo.json");
       execFileSync("mkfifo", [fifo]);
-      expect(await host.readRegularFile(fifo, RECORD_MAX_BYTES)).toEqual({ kind: "other" });
+      expect(await host.lstat(fifo)).toMatchObject({ kind: "other" });
+      expect(await readRecord(host, fifo)).toBeNull();
+      expect(await host.lstat("/dev/null")).toMatchObject({ kind: "other" });
+      const seen = await host.lstat(file);
+      expect(await host.readOpened(file, RECORD_MAX_BYTES)).toMatchObject({
+        kind: "file",
+        dev: seen.dev,
+        ino: seen.ino,
+      });
       const big = join(dir, "big.json");
       await writeFile(big, valid().padEnd(RECORD_MAX_BYTES * 2, " "));
-      expect(await host.readRegularFile(big, RECORD_MAX_BYTES)).toMatchObject({
+      expect(await host.readOpened(big, RECORD_MAX_BYTES)).toMatchObject({
         kind: "file",
         text: null,
       });

@@ -46,11 +46,19 @@ function text(value: unknown): string | null {
   return typeof value === "string" ? value : null;
 }
 
-/** A string shown on one line: line breaks become spaces. */
+/**
+ * SVC-29: C0 and C1 control characters (a terminal's escape sequences) and
+ * Unicode bidirectional controls, which could restyle a terminal or reorder
+ * what is shown.
+ */
+// biome-ignore lint/suspicious/noControlCharactersInRegex: matching them is the point.
+const CONTROLS = /[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g;
+
+/** SVC-29: a record string as plain text, on one line: line breaks and tabs become spaces. */
 function line(value: unknown, max = Number.POSITIVE_INFINITY): string | null {
   const found = text(value);
   if (found === null) return null;
-  const flat = found.replace(/\s*[\r\n]+\s*/g, " ").trim();
+  const flat = found.replace(/\s+/g, " ").replace(CONTROLS, "").trim();
   return flat === "" ? null : flat.slice(0, max);
 }
 
@@ -81,11 +89,12 @@ export function parseRecord(source: string): ServiceRecord | null {
   return {
     id: line(data.id),
     title: line(data.title, TITLE_MAX),
-    case: text(data.case)?.trim().slice(0, CASE_MAX) || null,
+    case: line(data.case, CASE_MAX),
     credentials: each(data.credentials, (item) => {
       const label = line(item.label);
       if (label === null) return null;
-      return { label, username: text(item.username), secret: text(item.secret) };
+      // The secret stays whole: it is masked, and copying gives it as written.
+      return { label, username: line(item.username), secret: text(item.secret) };
     }),
     services: each(data.services, (item) => {
       const name = text(item.name);
@@ -96,7 +105,7 @@ export function parseRecord(source: string): ServiceRecord | null {
         name,
         urls: each(item.urls, (entry) => {
           const label = line(entry.label);
-          const url = text(entry.url);
+          const url = line(entry.url);
           return label === null || url === null ? null : { label, url };
         }),
       };
@@ -104,20 +113,39 @@ export function parseRecord(source: string): ServiceRecord | null {
   };
 }
 
+/** SVC-27: how long a record may take to read before it counts as unreadable. */
+export const RECORD_TIMEOUT_MS = 1_000;
+
 /**
  * SVC-27: reads the record at `path` only when it is an absolute path to a
  * regular file, not a symlink, owned by this server's user, of at most
- * 64 KiB; null when it is unreadable for any reason.
+ * 64 KiB; null when it is unreadable for any reason. `lstat` comes first, so
+ * nothing but a regular file (never a device) is opened, and the file opened
+ * must be the one `lstat` saw. A read that takes longer than `timeoutMs`
+ * (a hung network mount) counts as unreadable.
  */
-export async function readRecord(host: ProcessHost, path: string): Promise<ServiceRecord | null> {
+export async function readRecord(
+  host: ProcessHost,
+  path: string,
+  timeoutMs = RECORD_TIMEOUT_MS,
+): Promise<ServiceRecord | null> {
   if (!path.startsWith("/") || host.uid === null) return null;
-  let file: Awaited<ReturnType<ProcessHost["readRegularFile"]>>;
+  const uid = host.uid;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<null>((resolve) => {
+    timer = setTimeout(() => resolve(null), timeoutMs);
+  });
+  const read = (async () => {
+    const seen = await host.lstat(path);
+    if (seen.kind !== "file" || seen.uid !== uid || seen.size > RECORD_MAX_BYTES) return null;
+    const file = await host.readOpened(path, RECORD_MAX_BYTES);
+    if (file.kind !== "file" || file.dev !== seen.dev || file.ino !== seen.ino) return null;
+    if (file.uid !== uid || file.size > RECORD_MAX_BYTES || file.text === null) return null;
+    return parseRecord(file.text);
+  })().catch(() => null);
   try {
-    file = await host.readRegularFile(path, RECORD_MAX_BYTES);
-  } catch {
-    return null;
+    return await Promise.race([read, late]);
+  } finally {
+    clearTimeout(timer);
   }
-  if (file.kind !== "file" || file.uid !== host.uid) return null;
-  if (file.size > RECORD_MAX_BYTES || file.text === null) return null;
-  return parseRecord(file.text);
 }
