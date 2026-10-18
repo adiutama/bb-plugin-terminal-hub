@@ -97,10 +97,13 @@ useRpc().call ──► server.ts (bb.rpc) ──► lib/services.ts ──► l
   `AGENT_SERVICE_NAME`). Everything goes through a `ProcessHost`, so tests
   answer with recorded output and never touch a real process.
 - `lib/service-record.ts` reads a set's `services.json` (ADR 202610180513)
-  through `ProcessHost.readRegularFile`, which opens it with `O_NOFOLLOW` and
-  `O_NONBLOCK` and reports its type, owner and size from the open file, so
-  the checks of SVC-27 (absolute, regular, not a symlink, the server's user,
-  ≤ 64 KiB, `version` 1) apply to what is read. Fields are parsed one by one;
+  through the `ProcessHost`: `lstat` first, so only a regular file is ever
+  opened (never a device or FIFO), then `readOpened`, which opens it with
+  `O_NOFOLLOW`, `O_NONBLOCK` and `O_NOCTTY` and must find the same device and
+  inode. The checks of SVC-27 (absolute, regular, not a symlink, the server's
+  user, ≤ 64 KiB, `version` 1) apply to the file read, and a read taking over
+  1 s counts as unreadable. Control and bidi characters are stripped from
+  record strings (secrets aside), so the CLI prints plain text. Fields are parsed one by one;
   a bad one is dropped, not the record. `lib/services.ts` reads each record
   once per scan, and only for processes already listed, so the record never
   decides what is listed, which log is read, or what is signalled (SVC-30).

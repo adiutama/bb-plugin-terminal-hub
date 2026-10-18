@@ -92,8 +92,14 @@ interface Listed {
   service: Service;
 }
 
-/** SVC-27: each record read in one scan, by path, so a set's record is read once. */
-type RecordReads = Map<string, Promise<ServiceRecord | null>>;
+/**
+ * SVC-27: each record read in one scan, by path, so a set's record is read
+ * once; and the listed services waiting for their set, filled in together.
+ */
+interface RecordReads {
+  byPath: Map<string, Promise<ServiceRecord | null>>;
+  pending: Promise<void>[];
+}
 
 /**
  * SVC-25: within an environment, each set's rows together and by port, sets
@@ -168,7 +174,7 @@ export class Services {
     }
     const byEnvironment = new Map<string, Service[]>();
     const latest = new Map<number, Listed>();
-    const records: RecordReads = new Map();
+    const records: RecordReads = { byPath: new Map(), pending: [] };
     for (const listener of scan.listeners) {
       const service = await this.serviceFor(index, listener, records);
       if (!service) continue;
@@ -177,6 +183,8 @@ export class Services {
       services.push(service);
       byEnvironment.set(service.environmentId, services);
     }
+    // SVC-27: different sets' records are read at once, each within its timeout.
+    await Promise.all(records.pending);
     for (const service of await this.stillStopping(latest)) {
       latest.set(service.pid, { service });
       const services = byEnvironment.get(service.environmentId) ?? [];
@@ -318,7 +326,7 @@ export class Services {
     const environmentId = environmentOf(index, listener.cwd, listener.variables);
     if (environmentId === null) return null;
     const threadId = listener.variables?.threadId ?? null;
-    return {
+    const service: Service = {
       pid: listener.pid,
       ports: listener.ports,
       command: listener.command,
@@ -328,17 +336,25 @@ export class Services {
       threadTitle: threadId ? await this.threadTitle(threadId) : null,
       logPath: listener.logPath,
       name: listener.variables?.serviceName ?? null,
-      set: await this.setOf(listener.variables?.serviceRecord ?? null, records),
+      set: null,
     };
+    const record = listener.variables?.serviceRecord ?? null;
+    if (record !== null) {
+      records.pending.push(
+        this.setOf(record, records).then((set) => {
+          service.set = set;
+        }),
+      );
+    }
+    return service;
   }
 
   /** SVC-25, SVC-27: the set a record path names, with its title when readable. */
-  private async setOf(path: string | null, records: RecordReads): Promise<Service["set"]> {
-    if (path === null) return null;
-    let read = records.get(path);
+  private async setOf(path: string, records: RecordReads): Promise<NonNullable<Service["set"]>> {
+    let read = records.byPath.get(path);
     if (!read) {
       read = readRecord(this.host, path);
-      records.set(path, read);
+      records.byPath.set(path, read);
     }
     const record = await read;
     return {
