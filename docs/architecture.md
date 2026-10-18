@@ -93,8 +93,22 @@ useRpc().call ──► server.ts (bb.rpc) ──► lib/services.ts ──► l
   for parent, process group, controlling terminal, and start time,
   `lsof -d cwd,1` for working folder and log
   file, and `ps eww` (macOS) or `/proc/<pid>/environ` (Linux) for the bb
-  variables. Everything goes through a `ProcessHost`, so tests answer with
-  recorded output and never touch a real process.
+  variables and the agent service record's labels (`AGENT_SERVICE_RECORD`,
+  `AGENT_SERVICE_NAME`). Everything goes through a `ProcessHost`, so tests
+  answer with recorded output and never touch a real process.
+- `lib/service-record.ts` reads a set's `services.json` (ADR 202610180513)
+  through `ProcessHost.readRegularFile`, which opens it with `O_NOFOLLOW` and
+  `O_NONBLOCK` and reports its type, owner and size from the open file, so
+  the checks of SVC-27 (absolute, regular, not a symlink, the server's user,
+  ≤ 64 KiB, `version` 1) apply to what is read. Fields are parsed one by one;
+  a bad one is dropped, not the record. `lib/services.ts` reads each record
+  once per scan, and only for processes already listed, so the record never
+  decides what is listed, which log is read, or what is signalled (SVC-30).
+- The list carries each process's `name` and `set` (`record`, `id`,
+  `title`, `case`) only. URLs and credentials travel in `services.connect`,
+  asked for once when a labelled row is selected and read from the record
+  then; the page masks secrets and URL passwords until Show (SVC-29) and
+  builds links only for local `http(s)` URLs, from the parsed URL.
 - bb's own processes are protected (SVC-22): the server's process, its
   ancestors, their process groups, and anything running bb's executable,
   which is the server's `process.execPath` unless that is a plain runtime such
@@ -119,14 +133,15 @@ useRpc().call ──► server.ts (bb.rpc) ──► lib/services.ts ──► l
 
 | File | Role |
 | --- | --- |
-| `lib/services-contract.ts` | The RPC methods (`services.list`, `.plan`, `.stop`, `.log`) and their schemas; the page imports only its types. |
+| `lib/services-contract.ts` | The RPC methods (`services.list`, `.plan`, `.stop`, `.log`, `.connect`) and their schemas; the page imports only its types. |
 | `lib/processes.ts` | `ProcessHost`, and parsing `lsof`/`ps` output into listeners with ports, folder, log, and bb variables. |
-| `lib/process-host.ts` | The real `ProcessHost`: `execFile` with argument arrays, `LC_ALL=C`, and the system folders on the lookup path. |
-| `lib/services.ts` | Which listeners are listed and under which environment (SVC-2, SVC-3), thread titles, stop planning and signalling (SVC-19), log tails. |
-| `lib/services-view.ts` | The find field's filter and the running count (SVC-15). |
+| `lib/process-host.ts` | The real `ProcessHost`: `execFile` with argument arrays, `LC_ALL=C`, and the system folders on the lookup path; records opened without following symlinks. |
+| `lib/service-record.ts` | The agent service record, version 1: the checks before reading it and its tolerant parsing (SVC-27). |
+| `lib/services.ts` | Which listeners are listed and under which environment (SVC-2, SVC-3), thread titles, sets and their order (SVC-25), stop planning and signalling (SVC-19), log tails, Connect (SVC-28). |
+| `lib/services-view.ts` | The find field's filter and the running count (SVC-15), set runs and labels (SVC-25), URL masking and local links (SVC-29). |
 | `lib/services-cli.ts` | `bb terminal-hub services`: text and JSON for one environment. |
 | `lib/services-store.ts` | The main view (terminals or Services) and the latest list, shared by the title-bar button and the page. |
-| `components/services-page.tsx` | The title-bar button, the scan cadence, and the Services view: the port-led table with its `⋯` menu, the stop confirmation, and the drawer with Open, Stop and the log (ADR 202610180433). |
+| `components/services-page.tsx` | The title-bar button, the scan cadence, and the Services view: the port-led table with set rows and service names and its `⋯` menu, the stop confirmation, and the drawer with Open, Stop, Connect and the log (ADR 202610180433, 202610180513). |
 | `components/ui/tooltip.tsx` | The program's full command line on hover (SVC-24). |
 
 ## Terminal engine
