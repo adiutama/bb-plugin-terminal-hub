@@ -1,5 +1,10 @@
+import { execFileSync } from "node:child_process";
+import { mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { RECORD_MAX_BYTES } from "../lib/service-record";
+import { nodeProcessHost } from "../lib/process-host";
+import { RECORD_MAX_BYTES, readRecord } from "../lib/service-record";
 import { STARTED_AT } from "./fixtures/fake-host";
 import {
   disposeServers,
@@ -202,6 +207,36 @@ describe("service record: reading it", () => {
     expect(server.reads).toEqual([RECORD]);
     await server.call("services.list");
     expect(server.reads).toEqual([RECORD, RECORD]);
+  });
+});
+
+describe("service record: on this machine's files", () => {
+  it("SVC-27: the server opens a record without following a symlink, never blocks on a FIFO, and reads at most 64 KiB", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "th-record-"));
+    try {
+      const host = nodeProcessHost();
+      const file = join(dir, "services.json");
+      await writeFile(file, valid(), { mode: 0o600 });
+      expect((await readRecord(host, file))?.title).toBe("kai-platform — multi-org access case");
+      const link = join(dir, "link.json");
+      await symlink(file, link);
+      expect(await host.readRegularFile(link, RECORD_MAX_BYTES)).toEqual({ kind: "symlink" });
+      expect(await readRecord(host, link)).toBeNull();
+      expect(await host.readRegularFile(dir, RECORD_MAX_BYTES)).toEqual({ kind: "other" });
+      const fifo = join(dir, "fifo.json");
+      execFileSync("mkfifo", [fifo]);
+      expect(await host.readRegularFile(fifo, RECORD_MAX_BYTES)).toEqual({ kind: "other" });
+      const big = join(dir, "big.json");
+      await writeFile(big, valid().padEnd(RECORD_MAX_BYTES * 2, " "));
+      expect(await host.readRegularFile(big, RECORD_MAX_BYTES)).toMatchObject({
+        kind: "file",
+        text: null,
+      });
+      expect(await readRecord(host, big)).toBeNull();
+      expect(await readRecord(host, join(dir, "missing.json"))).toBeNull();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });
 

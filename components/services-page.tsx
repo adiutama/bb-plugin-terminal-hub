@@ -1,6 +1,7 @@
 // Services: the servers running in bb environments outside bb terminals, as
 // one full-width table grouped by environment, with the selected process's
-// log in a drawer below it. Shown as the Terminals page's main view from a
+// log in a drawer below it. Rows an agent service record labels are named and
+// shown under their set, and the drawer adds how to connect (ADR 202610180513). Shown as the Terminals page's main view from a
 // button in its title bar (ADR 202610171823). The server entry scans and
 // signals the processes; the page asks it over plugin RPC. Nothing here lives
 // in the URL (SVC-21).
@@ -12,6 +13,7 @@ import {
   useSdk,
 } from "@get-bb/plugin-sdk/app";
 import {
+  Fragment,
   type ReactNode,
   useEffect,
   useLayoutEffect,
@@ -36,8 +38,10 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { useNow } from "@/hooks/useNow";
 import { message } from "@/lib/hub-store";
 import type {
+  Connect,
   Service,
   ServiceGroup,
+  ServiceSet,
   ServicesContract,
   ServicesList,
   StopExpectation,
@@ -46,9 +50,15 @@ import { type ServicesStore, servicesStoreFor } from "@/lib/services-store";
 import {
   filterGroups,
   findWords,
+  hasPassword,
+  localLink,
+  MASK,
+  maskUrl,
   programName,
   serviceCount,
   serviceKey,
+  setLabel,
+  setRuns,
 } from "@/lib/services-view";
 import { formatAgo } from "@/lib/time";
 import { cn } from "@/lib/utils";
@@ -190,6 +200,39 @@ function useServiceLog(rpc: Rpc, service: Service | null, listed: boolean, visib
   return state && state.key === key ? state.log : ({ kind: "loading" } as const);
 }
 
+type ConnectState = Exclude<Connect, { outcome: "ended" }>;
+
+/**
+ * SVC-28: the selected process's URLs and its set's credentials, asked for
+ * once per selection, and only for a labelled process; kept once it ended.
+ */
+function useServiceConnect(rpc: Rpc, service: Service | null, listed: boolean) {
+  const [state, setState] = useState<{ key: string; connect: ConnectState } | null>(null);
+  const rpcRef = useRef(rpc);
+  rpcRef.current = rpc;
+  const key = service ? serviceKey(service) : null;
+  const pid = service?.pid;
+  const startedAt = service?.startedAt;
+  const labelled = Boolean(service?.name && service.set);
+  useEffect(() => {
+    if (key === null || pid === undefined || startedAt === undefined) return;
+    if (!listed || !labelled) return;
+    let cancelled = false;
+    void rpcRef.current.call("services.connect", { pid, startedAt }).then(
+      (result) => {
+        if (!cancelled && result.outcome !== "ended") setState({ key, connect: result });
+      },
+      () => {
+        // Shown without a Connect section.
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [key, pid, startedAt, listed, labelled]);
+  return state && state.key === key ? state.connect : null;
+}
+
 async function copy(text: string, what: string) {
   const ok = await experimental_copyToClipboard({ text });
   if (ok) toast(`Copied ${what}`);
@@ -218,6 +261,7 @@ export function ServicesView({ store, visible }: { store: ServicesStore; visible
   const ended = selected !== null && list !== null && current === null;
   const shown = current ?? selected;
   const log = useServiceLog(rpc, shown, !ended, visible);
+  const connect = useServiceConnect(rpc, shown, !ended);
 
   // SVC-8, SVC-9: when each process was sent SIGTERM from here.
   const [stopped, setStopped] = useState<ReadonlyMap<string, number>>(new Map());
@@ -405,6 +449,7 @@ export function ServicesView({ store, visible }: { store: ServicesStore; visible
             service={shown}
             ended={ended}
             log={log}
+            connect={connect}
             now={now}
             stop={shownStop}
             onStop={() => void askStop(shown)}
@@ -521,18 +566,33 @@ function ServicesTable({
             </th>
           </tr>
           {group.checked ? (
-            group.services.map((service) => (
-              <ServiceRow
-                key={serviceKey(service)}
-                service={service}
-                selected={serviceKey(service) === selectedKey}
-                now={now}
-                stop={stopState(service)}
-                onSelect={onSelect}
-                onOpenThread={onOpenThread}
-                onStop={onStop}
-                onForceStop={onForceStop}
-              />
+            setRuns(group.services).map((run, index) => (
+              // The server keeps each set's rows together (SVC-25): one run per set.
+              <Fragment key={run.set ? `set:${run.set.record}` : "unlabelled"}>
+                {run.set ? (
+                  <SetRow set={run.set} />
+                ) : index > 0 ? (
+                  // Unlabelled rows after the sets: a hairline ends the last set.
+                  <tr data-set-end="">
+                    <td colSpan={5} className="px-5 py-1">
+                      <div className="h-px bg-foreground/[0.07]" />
+                    </td>
+                  </tr>
+                ) : null}
+                {run.services.map((service) => (
+                  <ServiceRow
+                    key={serviceKey(service)}
+                    service={service}
+                    selected={serviceKey(service) === selectedKey}
+                    now={now}
+                    stop={stopState(service)}
+                    onSelect={onSelect}
+                    onOpenThread={onOpenThread}
+                    onStop={onStop}
+                    onForceStop={onForceStop}
+                  />
+                ))}
+              </Fragment>
             ))
           ) : (
             // SVC-11
@@ -576,6 +636,43 @@ function GroupHeading({ group }: { group: ServiceGroup }) {
   );
 }
 
+/**
+ * SVC-25: a set's row inside its environment: the record's title, with its
+ * case on hover, or the record's folder name when it cannot be read.
+ */
+function SetRow({ set }: { set: ServiceSet }) {
+  const label = setLabel(set);
+  return (
+    <tr data-service-set={set.record}>
+      <td colSpan={5} className="h-7 px-5 pb-0.5 pt-2 align-bottom text-[12px]">
+        <span className="flex min-w-0 items-center gap-1.5 text-foreground/75">
+          <Icon name="Layers" className={cn("size-3 shrink-0", SUBTLE)} aria-hidden="true" />
+          {set.case ? (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  className="min-w-0 cursor-default truncate rounded-sm text-left font-medium underline decoration-foreground/30 decoration-dotted underline-offset-4 outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                >
+                  {label}
+                </button>
+              </TooltipTrigger>
+              <TooltipContent
+                align="start"
+                className="max-w-[440px] whitespace-pre-wrap break-words text-[12px] leading-[1.5]"
+              >
+                {set.case}
+              </TooltipContent>
+            </Tooltip>
+          ) : (
+            <span className="min-w-0 truncate font-medium">{label}</span>
+          )}
+        </span>
+      </td>
+    </tr>
+  );
+}
+
 /** SVC-6: each port opens `http://127.0.0.1:<port>` in a new tab, without selecting the row. */
 function PortLinks({ service, selected }: { service: Service; selected: boolean }) {
   return (
@@ -609,19 +706,40 @@ function PortLinks({ service, selected }: { service: Service; selected: boolean 
   );
 }
 
-/** SVC-24: the program's name, underlined with dots; the full command line on hover. */
-function Program({ command, className }: { command: string; className?: string }) {
+/**
+ * SVC-24: the program's name, underlined with dots; the full command line on
+ * hover. SVC-26: a labelled process's name leads, the program after it, muted.
+ */
+function Program({
+  command,
+  name,
+  className,
+}: {
+  command: string;
+  name: string | null;
+  className?: string;
+}) {
+  const dotted = "underline decoration-foreground/35 decoration-dotted underline-offset-4";
   return (
     <Tooltip>
       <TooltipTrigger asChild>
         <button
           type="button"
           className={cn(
-            "max-w-full cursor-default truncate rounded-sm text-left font-medium underline decoration-foreground/35 decoration-dotted underline-offset-4 outline-none focus-visible:ring-1 focus-visible:ring-ring",
+            "max-w-full cursor-default truncate rounded-sm text-left font-medium outline-none focus-visible:ring-1 focus-visible:ring-ring",
             className,
           )}
         >
-          {programName(command)}
+          {name ? (
+            <>
+              <span data-service-name="" className={dotted}>
+                {name}
+              </span>{" "}
+              <span className={cn("ml-1 font-normal", SUBTLE)}>{programName(command)}</span>
+            </>
+          ) : (
+            <span className={dotted}>{programName(command)}</span>
+          )}
         </button>
       </TooltipTrigger>
       <TooltipContent
@@ -674,7 +792,7 @@ function ServiceRow({
         <PortLinks service={service} selected={selected} />
       </td>
       <td className={cell}>
-        <Program command={service.command} />
+        <Program command={service.command} name={service.name} />
       </td>
       <td className={cell}>
         {/* SVC-18 */}
@@ -732,7 +850,7 @@ function RowMenu({
   stop: StopState;
   onStop: (service: Service) => void;
 }) {
-  const program = programName(service.command);
+  const program = service.name ?? programName(service.command);
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -828,6 +946,7 @@ function LogDrawer({
   service,
   ended,
   log,
+  connect,
   now,
   stop,
   onStop,
@@ -837,6 +956,7 @@ function LogDrawer({
   service: Service;
   ended: boolean;
   log: LogState;
+  connect: ConnectState | null;
   now: number;
   stop: StopState;
   onStop: () => void;
@@ -866,7 +986,11 @@ function LogDrawer({
         <span className="shrink-0 font-mono text-[14px] font-semibold tabular-nums">
           {service.ports.map((port) => `:${port}`).join(" ")}
         </span>
-        <Program command={service.command} className="text-[14px] no-underline" />
+        <Program
+          command={service.command}
+          name={service.name}
+          className="text-[14px] [&>span]:no-underline"
+        />
         <span className={cn("flex min-w-0 items-center gap-3.5 text-[12px]", SUBTLE)}>
           <span className="shrink-0">
             PID <b className="font-normal tabular-nums text-foreground/80">{service.pid}</b>
@@ -940,6 +1064,10 @@ function LogDrawer({
           This process ended.
         </p>
       ) : null}
+      {connect?.outcome === "connect" &&
+      (connect.urls.length > 0 || connect.credentials.length > 0) ? (
+        <ConnectSection key={key} connect={connect} />
+      ) : null}
       {log.kind === "log" && log.error ? (
         <p role="alert" className="shrink-0 px-5 pb-2 text-[12px] text-destructive">
           Could not read the log: {log.error}
@@ -965,5 +1093,164 @@ function LogDrawer({
         </pre>
       )}
     </section>
+  );
+}
+
+/**
+ * SVC-28, SVC-29: how to reach the selected service, from its record: its
+ * URLs, each with its label, and its set's credentials, each with its label
+ * and username. Passwords and secrets show as `••••` until Show; copying
+ * gives the full value. Only local http(s) URLs are links. All plain text.
+ */
+function ConnectSection({ connect }: { connect: Extract<ConnectState, { outcome: "connect" }> }) {
+  const [shown, setShown] = useState<ReadonlySet<string>>(new Set());
+  const toggle = (id: string) =>
+    setShown((set) => {
+      const next = new Set(set);
+      if (!next.delete(id)) next.add(id);
+      return next;
+    });
+  const labelClass = cn("truncate pr-3 text-[12px]", SUBTLE);
+  const valueClass = "min-w-0 truncate font-mono text-[12px] text-foreground/[0.88]";
+  return (
+    <section
+      aria-label="Connect"
+      className="max-h-[45%] shrink-0 overflow-y-auto px-5 pb-2.5 [&_[data-icon-root]]:size-3"
+    >
+      <div className="grid grid-cols-[minmax(80px,max-content)_minmax(0,1fr)_auto] items-center gap-y-0.5">
+        {connect.urls.map((entry, index) => {
+          const id = `url:${index}`;
+          const secret = hasPassword(entry.url);
+          const revealed = !secret || shown.has(id);
+          const text = revealed ? entry.url : maskUrl(entry.url);
+          const href = localLink(entry.url, revealed);
+          return (
+            <div key={id} data-connect-url="" className="contents">
+              <span className={labelClass} title={entry.label}>
+                {entry.label}
+              </span>
+              {href ? (
+                <a
+                  href={href}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className={cn(
+                    valueClass,
+                    "w-fit max-w-full rounded-sm underline-offset-2 outline-none hover:underline focus-visible:ring-1 focus-visible:ring-ring",
+                  )}
+                >
+                  {text}
+                </a>
+              ) : (
+                <span className={valueClass}>{text}</span>
+              )}
+              <span className="flex items-center justify-end gap-0.5 pl-2">
+                {secret ? (
+                  <RevealButton
+                    label={entry.label}
+                    shown={shown.has(id)}
+                    onToggle={() => toggle(id)}
+                  />
+                ) : null}
+                <CopyButton
+                  label={`Copy ${entry.label} URL`}
+                  onCopy={() => copy(entry.url, `the ${entry.label} URL`)}
+                />
+              </span>
+            </div>
+          );
+        })}
+        {connect.credentials.map((credential, index) => {
+          const id = `secret:${index}`;
+          return (
+            <div key={id} data-connect-credential="" className="contents">
+              <span className={labelClass} title={credential.label}>
+                {credential.label}
+              </span>
+              <span className={cn(valueClass, "flex gap-3")}>
+                {credential.username !== null ? (
+                  <span className="truncate">{credential.username}</span>
+                ) : null}
+                {credential.secret !== null ? (
+                  <span data-secret="" className="truncate">
+                    {shown.has(id) ? credential.secret : MASK}
+                  </span>
+                ) : null}
+              </span>
+              <span className="flex items-center justify-end gap-0.5 pl-2">
+                {credential.secret !== null ? (
+                  <RevealButton
+                    label={credential.label}
+                    shown={shown.has(id)}
+                    onToggle={() => toggle(id)}
+                  />
+                ) : null}
+                {credential.username !== null ? (
+                  <CopyButton
+                    label={`Copy ${credential.label} username`}
+                    onCopy={() =>
+                      copy(credential.username ?? "", `the ${credential.label} username`)
+                    }
+                  />
+                ) : null}
+                {credential.secret !== null ? (
+                  <CopyButton
+                    label={`Copy ${credential.label} secret`}
+                    icon="KeyRound"
+                    onCopy={() => copy(credential.secret ?? "", `the ${credential.label} secret`)}
+                  />
+                ) : null}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+/** SVC-29: Show and Hide for one masked value. */
+function RevealButton({
+  label,
+  shown,
+  onToggle,
+}: {
+  label: string;
+  shown: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <Button
+      variant="ghost"
+      size="sm"
+      aria-pressed={shown}
+      aria-label={`${shown ? "Hide" : "Show"} ${label}`}
+      onClick={onToggle}
+      className={cn("h-6 px-1.5 text-[11.5px] font-normal pointer-coarse:h-9", SUBTLE)}
+    >
+      {shown ? "Hide" : "Show"}
+    </Button>
+  );
+}
+
+function CopyButton({
+  label,
+  icon = "Copy",
+  onCopy,
+}: {
+  label: string;
+  icon?: string;
+  onCopy: () => Promise<void>;
+}) {
+  return (
+    <Button
+      variant="ghost"
+      size="icon"
+      className={cn(ICON_BUTTON_CLASS, "size-6")}
+      aria-label={label}
+      onClick={() => void onCopy()}
+    >
+      <Icon name={icon} aria-hidden="true" />
+    </Button>
   );
 }
