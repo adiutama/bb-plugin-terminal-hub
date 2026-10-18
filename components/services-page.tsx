@@ -28,9 +28,11 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Icon } from "@/components/ui/icon";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { useNow } from "@/hooks/useNow";
 import { message } from "@/lib/hub-store";
 import type {
@@ -41,7 +43,13 @@ import type {
   StopExpectation,
 } from "@/lib/services-contract";
 import { type ServicesStore, servicesStoreFor } from "@/lib/services-store";
-import { filterGroups, findWords, serviceCount, serviceKey } from "@/lib/services-view";
+import {
+  filterGroups,
+  findWords,
+  programName,
+  serviceCount,
+  serviceKey,
+} from "@/lib/services-view";
 import { formatAgo } from "@/lib/time";
 import { cn } from "@/lib/utils";
 
@@ -56,9 +64,18 @@ export const FORCE_STOP_AFTER_MS = 5_000;
 
 export type Rpc = ReturnType<typeof useRpc<ServicesContract>>;
 
-/** Row icon buttons: 28px, 36px on a coarse pointer. */
-const ACTION_BUTTON_CLASS =
-  "size-7 shrink-0 rounded-md text-muted-foreground pointer-coarse:size-9 [&_[data-icon-root]]:size-3.5";
+/** bb's secondary text colour (ADR 202610180433), not `--muted-foreground`. */
+const SUBTLE = "text-[var(--subtle-foreground)]";
+const DESTRUCTIVE_TEXT = "text-[var(--destructive-text)]";
+/** Icon buttons: 28px, 36px on a coarse pointer. */
+const ICON_BUTTON_CLASS = cn(
+  "size-7 shrink-0 rounded-md pointer-coarse:size-9 [&_[data-icon-root]]:size-3.5",
+  SUBTLE,
+);
+/** The drawer's labelled buttons. */
+const DRAWER_BUTTON_CLASS =
+  "h-7 gap-1.5 border-foreground/12 px-2.5 text-[12.5px] font-normal pointer-coarse:h-9 [&_[data-icon-root]]:size-3.5";
+const STOP_BUTTON_CLASS = cn("border-destructive/35", DESTRUCTIVE_TEXT);
 
 /** SVC-6: where "Open" points for a port. */
 export function serviceUrl(port: number): string {
@@ -123,7 +140,7 @@ export function ServicesButton(_props: PluginNavPanelProps) {
       onClick={() => store.toggleView()}
       className="h-7 gap-1.5 px-2 text-[12.5px] text-muted-foreground [&_[data-icon-root]]:size-3.5"
     >
-      <Icon name="Server" aria-hidden="true" />
+      <Icon name="Zap" aria-hidden="true" />
       Services
       {count > 0 ? (
         <span data-services-count="" className="tabular-nums text-foreground/80">
@@ -298,22 +315,22 @@ export function ServicesView({ store, visible }: { store: ServicesStore; visible
   let body: ReactNode;
   if (list === null) {
     body = error ? (
-      <EmptyPane icon="Server" message={`Could not list services: ${error}`} />
+      <EmptyPane icon="Zap" message={`Could not list services: ${error}`} />
     ) : (
-      <EmptyPane icon="Server" message="Looking for services…" />
+      <EmptyPane icon="Zap" message="Looking for services…" />
     );
   } else if (!list.available) {
     // SVC-12
     body = (
       <EmptyPane
-        icon="Server"
+        icon="Zap"
         message="Service detection is unavailable on this machine: lsof was not found."
       />
     );
   } else if (count === 0 && (groups.length === 0 || words.length > 0)) {
     // SVC-17, SVC-11
     body = (
-      <EmptyPane icon="Server" message={emptyMessage(list)}>
+      <EmptyPane icon="Zap" message={emptyMessage(list)}>
         {list.hostKnown ? <p>{EMPTY_EXPLANATION}</p> : null}
       </EmptyPane>
     );
@@ -328,10 +345,7 @@ export function ServicesView({ store, visible }: { store: ServicesStore; visible
       <>
         {count === 0 ? (
           // SVC-17, SVC-11: nothing listed here, and other hosts are not checked.
-          <div
-            data-services-empty=""
-            className="px-4 pb-2 pt-4 text-[12.5px] text-muted-foreground"
-          >
+          <div data-services-empty="" className={cn("px-5 pb-2 pt-4 text-[12.5px]", SUBTLE)}>
             <p className="text-foreground/90">{emptyMessage(list)}</p>
             {list.hostKnown ? <p>{EMPTY_EXPLANATION}</p> : null}
           </div>
@@ -349,69 +363,80 @@ export function ServicesView({ store, visible }: { store: ServicesStore; visible
       </>
     );
   }
+  const shownStop = shown && !ended ? stopState(shown) : "none";
 
   return (
-    <section aria-label="Services" className="flex min-h-0 min-w-0 flex-1 flex-col bg-background">
-      <header className={cn(BAND_CLASS, "flex items-center gap-3 pl-4 pr-3")}>
-        <h2 className="text-[13px] font-medium">Services</h2>
-        <label className="ml-auto flex h-7 w-[240px] min-w-0 items-center gap-2 rounded-md bg-foreground/[0.04] px-2 text-muted-foreground focus-within:ring-1 focus-within:ring-ring">
-          <Icon name="Search" className="size-3.5 shrink-0" aria-hidden="true" />
-          <input
-            type="text"
-            value={find}
-            onChange={(event) => setFind(event.target.value)}
-            placeholder="Find"
-            aria-label="Find service"
-            spellCheck={false}
-            autoComplete="off"
-            className="min-w-0 flex-1 bg-transparent text-[13px] text-foreground outline-none placeholder:text-muted-foreground/70"
-          />
-        </label>
-        <span
-          data-services-count=""
-          className="shrink-0 text-[12px] tabular-nums text-muted-foreground"
-        >
-          {count} running
-        </span>
-      </header>
-      {list?.error || (list && error) ? (
-        <p
-          role="alert"
-          className="shrink-0 border-b border-foreground/8 px-4 py-1.5 text-[12px] text-destructive"
-        >
-          {error
-            ? `Could not list services: ${error}`
-            : `Could not list every environment: ${list?.error}`}
-        </p>
-      ) : null}
-      <div className="flex min-h-0 flex-1 flex-col overflow-auto">{body}</div>
-      {shown ? (
-        <LogDrawer service={shown} ended={ended} log={log} onClose={() => setSelected(null)} />
-      ) : null}
-      <ConfirmDialog
-        open={confirming !== null}
-        title="Stop this process?"
-        description={confirming ? stopDescription(confirming.service, confirming.commands) : null}
-        confirmLabel="Stop"
-        busy={busy}
-        onCancel={() => setConfirming(null)}
-        onConfirm={() => confirming && void stop(confirming.service, false, confirming.expected)}
-      >
-        {confirming && confirming.commands.length > 1 ? (
-          <ul
-            data-stop-commands=""
-            className="max-h-40 overflow-y-auto rounded-md bg-foreground/[0.04] px-3 py-2 font-mono text-[11.5px] text-muted-foreground"
+    <TooltipProvider delayDuration={300}>
+      <section aria-label="Services" className="flex min-h-0 min-w-0 flex-1 flex-col bg-background">
+        <header className={cn(BAND_CLASS, "flex items-center gap-3 pl-5 pr-3")}>
+          <h2 className="text-[13px] font-semibold">Services</h2>
+          <label
+            className={cn(
+              "ml-auto flex h-7 w-[240px] min-w-0 items-center gap-2 rounded-md bg-foreground/[0.04] px-2 focus-within:ring-1 focus-within:ring-ring",
+              SUBTLE,
+            )}
           >
-            {confirming.commands.map((command, index) => (
-              // biome-ignore lint/suspicious/noArrayIndexKey: commands repeat; the list never reorders.
-              <li key={index} className="truncate" title={command}>
-                {command}
-              </li>
-            ))}
-          </ul>
+            <Icon name="Search" className="size-3.5 shrink-0" aria-hidden="true" />
+            <input
+              type="text"
+              value={find}
+              onChange={(event) => setFind(event.target.value)}
+              placeholder="Find"
+              aria-label="Find service"
+              spellCheck={false}
+              autoComplete="off"
+              className="min-w-0 flex-1 bg-transparent text-[13px] text-foreground outline-none placeholder:text-[var(--subtle-foreground)]"
+            />
+          </label>
+        </header>
+        {list?.error || (list && error) ? (
+          <p
+            role="alert"
+            className="shrink-0 border-b border-foreground/8 px-4 py-1.5 text-[12px] text-destructive"
+          >
+            {error
+              ? `Could not list services: ${error}`
+              : `Could not list every environment: ${list?.error}`}
+          </p>
         ) : null}
-      </ConfirmDialog>
-    </section>
+        <div className="flex min-h-0 flex-1 flex-col overflow-auto">{body}</div>
+        {shown ? (
+          <LogDrawer
+            service={shown}
+            ended={ended}
+            log={log}
+            now={now}
+            stop={shownStop}
+            onStop={() => void askStop(shown)}
+            onForceStop={() => void stop(shown, true)}
+            onClose={() => setSelected(null)}
+          />
+        ) : null}
+        <ConfirmDialog
+          open={confirming !== null}
+          title="Stop this process?"
+          description={confirming ? stopDescription(confirming.service, confirming.commands) : null}
+          confirmLabel="Stop"
+          busy={busy}
+          onCancel={() => setConfirming(null)}
+          onConfirm={() => confirming && void stop(confirming.service, false, confirming.expected)}
+        >
+          {confirming && confirming.commands.length > 1 ? (
+            <ul
+              data-stop-commands=""
+              className="max-h-40 overflow-y-auto rounded-md bg-foreground/[0.04] px-3 py-2 font-mono text-[11.5px] text-muted-foreground"
+            >
+              {confirming.commands.map((command, index) => (
+                // biome-ignore lint/suspicious/noArrayIndexKey: commands repeat; the list never reorders.
+                <li key={index} className="truncate" title={command}>
+                  {command}
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </ConfirmDialog>
+      </section>
+    </TooltipProvider>
   );
 }
 
@@ -433,6 +458,8 @@ function stopDescription(service: Service, commands: readonly string[]): string 
   return `Sends SIGTERM to ${commands.length} processes: PID ${service.pid} and the processes started with it.`;
 }
 
+type StopState = "none" | "stopping" | "force";
+
 function ServicesTable({
   groups,
   selectedKey,
@@ -446,33 +473,38 @@ function ServicesTable({
   groups: readonly ServiceGroup[];
   selectedKey: string | null;
   now: number;
-  stopState: (service: Service) => "none" | "stopping" | "force";
+  stopState: (service: Service) => StopState;
   onSelect: (service: Service) => void;
   onOpenThread: (threadId: string) => void;
   onStop: (service: Service) => void;
   onForceStop: (service: Service) => void;
 }) {
-  const head = "px-2 py-1.5 text-left text-[11px] font-medium uppercase tracking-wide";
+  const states = groups.flatMap((group) => group.services.map(stopState));
+  const head = cn("px-[10px] pb-1.5 pt-3.5 text-left text-[12px] font-normal", SUBTLE);
   return (
-    <table aria-label="Services" className="w-full table-fixed border-collapse text-[12.5px]">
-      <thead className="sticky top-0 z-[1] bg-background text-muted-foreground">
-        <tr className="border-b border-foreground/8">
-          <th scope="col" className={cn(head, "w-[120px] pl-4")}>
+    <table aria-label="Services" className="w-full table-fixed border-collapse text-[13px]">
+      <colgroup>
+        <col className="w-[116px]" />
+        <col className="w-[150px]" />
+        <col />
+        <col className={states.includes("stopping") ? "w-[88px]" : "w-[56px]"} />
+        <col className={states.includes("force") ? "w-[136px]" : "w-[52px]"} />
+      </colgroup>
+      <thead className="sticky top-0 z-[1] bg-background">
+        <tr>
+          <th scope="col" className={cn(head, "pl-5")}>
             Port
           </th>
           <th scope="col" className={head}>
-            Process
+            Program
           </th>
-          <th scope="col" className={cn(head, "w-[200px]")}>
+          <th scope="col" className={head}>
             Started by
           </th>
-          <th scope="col" className={cn(head, "w-[76px]")}>
-            PID
-          </th>
-          <th scope="col" className={cn(head, "w-[52px]")}>
+          <th scope="col" className={cn(head, "text-right")}>
             Up
           </th>
-          <th scope="col" className={cn(head, "w-[112px] pr-3")}>
+          <th scope="col" className={head}>
             <span className="sr-only">Actions</span>
           </th>
         </tr>
@@ -482,34 +514,123 @@ function ServicesTable({
           <tr>
             <th
               scope="colgroup"
-              colSpan={6}
-              className="truncate px-4 pb-1 pt-3 text-left text-[12px] font-medium text-foreground/80"
+              colSpan={5}
+              className="px-5 pb-1.5 pt-[18px] text-left text-[12.5px] font-normal"
             >
-              {group.projectName} › <span className="font-mono">{group.environmentName}</span>
-              {/* SVC-11 */}
-              {group.checked ? null : (
-                <span className="ml-2 font-normal text-muted-foreground">
-                  not checked (other host)
-                </span>
-              )}
+              <GroupHeading group={group} />
             </th>
           </tr>
-          {group.services.map((service) => (
-            <ServiceRow
-              key={serviceKey(service)}
-              service={service}
-              selected={serviceKey(service) === selectedKey}
-              now={now}
-              stop={stopState(service)}
-              onSelect={onSelect}
-              onOpenThread={onOpenThread}
-              onStop={onStop}
-              onForceStop={onForceStop}
-            />
-          ))}
+          {group.checked ? (
+            group.services.map((service) => (
+              <ServiceRow
+                key={serviceKey(service)}
+                service={service}
+                selected={serviceKey(service) === selectedKey}
+                now={now}
+                stop={stopState(service)}
+                onSelect={onSelect}
+                onOpenThread={onOpenThread}
+                onStop={onStop}
+                onForceStop={onForceStop}
+              />
+            ))
+          ) : (
+            // SVC-11
+            <tr>
+              <td colSpan={5} className={cn("h-7 pb-1 pl-11 pr-5 text-[12.5px]", SUBTLE)}>
+                Not checked: this environment is on another machine.
+              </td>
+            </tr>
+          )}
         </tbody>
       ))}
     </table>
+  );
+}
+
+/**
+ * SVC-14: like bb's sidebar: the project's initial in a chip (neutral: the
+ * SDK gives no project colour), its name, then the environment after a branch
+ * icon, and a hairline to the edge.
+ */
+function GroupHeading({ group }: { group: ServiceGroup }) {
+  const initial = group.projectName.trim().charAt(0).toUpperCase() || "?";
+  return (
+    <div className="flex min-w-0 items-center gap-2">
+      <span
+        aria-hidden="true"
+        className="grid size-4 shrink-0 place-items-center rounded-[4px] bg-foreground/10 text-[10px] font-bold text-foreground/80"
+      >
+        {initial}
+      </span>
+      <span className="shrink-0 font-semibold text-foreground">{group.projectName}</span>
+      <span
+        className={cn("flex min-w-0 items-center gap-[5px] font-mono text-[12px]", SUBTLE)}
+        title={group.environmentName}
+      >
+        <Icon name="GitBranch" className="size-3 shrink-0" aria-hidden="true" />
+        <span className="truncate">{group.environmentName}</span>
+      </span>
+      <span aria-hidden="true" className="ml-1.5 h-px min-w-5 flex-1 bg-foreground/[0.07]" />
+    </div>
+  );
+}
+
+/** SVC-6: each port opens `http://127.0.0.1:<port>` in a new tab, without selecting the row. */
+function PortLinks({ service, selected }: { service: Service; selected: boolean }) {
+  return (
+    <span>
+      {service.ports.map((port, index) => (
+        <span key={port}>
+          {index > 0 ? " " : null}
+          <a
+            href={serviceUrl(port)}
+            target="_blank"
+            rel="noopener noreferrer"
+            aria-label={`Open :${port} in a new tab`}
+            title={serviceUrl(port)}
+            onClick={(event) => event.stopPropagation()}
+            className="inline-flex items-center gap-1.5 rounded-sm font-mono text-[13px] font-semibold tabular-nums text-foreground underline-offset-2 outline-none hover:underline focus-visible:ring-1 focus-visible:ring-ring"
+          >
+            :{port}
+            <Icon
+              name="ExternalLink"
+              className={cn(
+                "size-3",
+                SUBTLE,
+                selected ? "opacity-100" : "opacity-0 group-hover/row:opacity-100",
+              )}
+              aria-hidden="true"
+            />
+          </a>
+        </span>
+      ))}
+    </span>
+  );
+}
+
+/** SVC-24: the program's name, underlined with dots; the full command line on hover. */
+function Program({ command, className }: { command: string; className?: string }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          className={cn(
+            "max-w-full cursor-default truncate rounded-sm text-left font-medium underline decoration-foreground/35 decoration-dotted underline-offset-4 outline-none focus-visible:ring-1 focus-visible:ring-ring",
+            className,
+          )}
+        >
+          {programName(command)}
+        </button>
+      </TooltipTrigger>
+      <TooltipContent
+        align="start"
+        className="max-w-[440px] whitespace-normal break-all font-mono text-[11.5px] leading-[1.5]"
+      >
+        {command}
+      </TooltipContent>
+    </Tooltip>
   );
 }
 
@@ -526,44 +647,37 @@ function ServiceRow({
   service: Service;
   selected: boolean;
   now: number;
-  stop: "none" | "stopping" | "force";
+  stop: StopState;
   onSelect: (service: Service) => void;
   onOpenThread: (threadId: string) => void;
   onStop: (service: Service) => void;
   onForceStop: (service: Service) => void;
 }) {
-  const cell = "px-2 py-1.5 align-middle";
-  const ports = service.ports.map((port) => `:${port}`).join(" ");
+  const cell = "h-[38px] overflow-hidden text-ellipsis whitespace-nowrap px-[10px] align-middle";
   return (
     <tr
       data-service-pid={service.pid}
       data-selected={selected ? "" : undefined}
       onClick={() => onSelect(service)}
       className={cn(
-        "cursor-default border-l-2",
-        selected
-          ? "border-l-foreground/60 bg-foreground/[0.07]"
-          : "border-l-transparent hover:bg-foreground/[0.04]",
+        "group/row cursor-default",
+        selected ? "bg-foreground/[0.07]" : "hover:bg-foreground/[0.035]",
       )}
     >
-      <td className={cn(cell, "truncate pl-[14px] font-mono tabular-nums")} title={ports}>
-        {ports}
+      <td
+        className={cn(
+          cell,
+          "border-l-2 pl-[18px]",
+          selected ? "border-l-foreground/60" : "border-l-transparent",
+        )}
+      >
+        <PortLinks service={service} selected={selected} />
       </td>
       <td className={cell}>
-        <button
-          type="button"
-          aria-current={selected ? "true" : undefined}
-          title={service.command}
-          onClick={(event) => {
-            event.stopPropagation();
-            onSelect(service);
-          }}
-          className="block w-full min-w-0 truncate rounded-sm text-left font-mono text-[12px] outline-none focus-visible:ring-1 focus-visible:ring-ring"
-        >
-          {service.command}
-        </button>
+        <Program command={service.command} />
       </td>
       <td className={cell}>
+        {/* SVC-18 */}
         {service.threadId && service.threadTitle !== null ? (
           <button
             type="button"
@@ -572,77 +686,118 @@ function ServiceRow({
               event.stopPropagation();
               if (service.threadId) onOpenThread(service.threadId);
             }}
-            className="block max-w-full truncate rounded-sm text-left text-foreground/80 underline-offset-2 outline-none hover:text-foreground hover:underline focus-visible:ring-1 focus-visible:ring-ring"
+            className="group/by inline-flex max-w-full items-center gap-1.5 rounded-sm text-left text-foreground/80 outline-none hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring"
           >
-            {service.threadTitle}
+            <Icon
+              name="MessageSquare"
+              className={cn("size-3 shrink-0 group-hover/by:text-foreground", SUBTLE)}
+              aria-hidden="true"
+            />
+            <span className="truncate underline-offset-[3px] group-hover/by:underline">
+              {service.threadTitle}
+            </span>
           </button>
         ) : null}
       </td>
-      <td className={cn(cell, "font-mono tabular-nums text-muted-foreground")}>{service.pid}</td>
-      <td className={cn(cell, "tabular-nums text-muted-foreground")}>
-        {formatAgo(service.startedAt, now)}
+      <td className={cn(cell, "text-right tabular-nums", SUBTLE)}>
+        {stop === "none" ? formatAgo(service.startedAt, now) : "Stopping…"}
       </td>
       {/* biome-ignore lint/a11y/useKeyWithClickEvents: only keeps clicks on the actions from selecting the row. */}
       <td className={cn(cell, "pr-3")} onClick={(event) => event.stopPropagation()}>
-        <span className="flex items-center justify-end gap-0.5">
-          <OpenAction service={service} />
-          <CopyAction service={service} />
+        <span className="flex items-center justify-end gap-1">
           {stop === "force" ? (
             <Button
               variant="ghost"
               size="sm"
-              className="h-7 px-2 text-[12px] text-destructive pointer-coarse:h-9"
+              className={cn("h-7 px-2 text-[12.5px] pointer-coarse:h-9", DESTRUCTIVE_TEXT)}
               onClick={() => onForceStop(service)}
             >
               Force stop
             </Button>
-          ) : (
-            <Button
-              variant="ghost"
-              size="icon"
-              className={ACTION_BUTTON_CLASS}
-              aria-label={stop === "stopping" ? "Stopping…" : `Stop ${service.command}`}
-              disabled={stop === "stopping"}
-              onClick={() => onStop(service)}
-            >
-              <Icon name="Square" aria-hidden="true" />
-            </Button>
-          )}
+          ) : null}
+          <RowMenu service={service} stop={stop} onStop={onStop} />
         </span>
       </td>
     </tr>
   );
 }
 
-/** SVC-6: open a port in a new browser tab; a menu when there are several. */
-function OpenAction({ service }: { service: Service }) {
-  const link =
-    "flex items-center justify-center rounded-md outline-none hover:bg-foreground/6 hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring";
-  const [only] = service.ports;
-  if (service.ports.length === 1 && only !== undefined) {
-    return (
-      <a
-        href={serviceUrl(only)}
-        target="_blank"
-        rel="noopener noreferrer"
-        aria-label={`Open :${only} in a new tab`}
-        title={serviceUrl(only)}
-        className={cn(ACTION_BUTTON_CLASS, link)}
-      >
-        <Icon name="ExternalLink" className="size-3.5" aria-hidden="true" />
-      </a>
-    );
-  }
+/** SVC-7: copy the PID, the command line, or a port, and Stop…. */
+function RowMenu({
+  service,
+  stop,
+  onStop,
+}: {
+  service: Service;
+  stop: StopState;
+  onStop: (service: Service) => void;
+}) {
+  const program = programName(service.command);
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <Button
           variant="ghost"
           size="icon"
-          className={ACTION_BUTTON_CLASS}
-          aria-label={`Open a port of ${service.command}`}
+          className={cn(ICON_BUTTON_CLASS, "[&_[data-icon-root]]:size-4")}
+          aria-label={`More actions for ${program} :${service.ports.join(" :")}`}
         >
-          <Icon name="ExternalLink" aria-hidden="true" />
+          <Icon name="MoreHorizontal" aria-hidden="true" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end">
+        <DropdownMenuItem onSelect={() => void copy(String(service.pid), "the PID")}>
+          Copy PID
+        </DropdownMenuItem>
+        <DropdownMenuItem onSelect={() => void copy(service.command, "the command line")}>
+          Copy command line
+        </DropdownMenuItem>
+        {service.ports.map((port) => (
+          <DropdownMenuItem key={port} onSelect={() => void copy(String(port), `port ${port}`)}>
+            Copy port :{port}
+          </DropdownMenuItem>
+        ))}
+        <DropdownMenuSeparator />
+        <DropdownMenuItem
+          variant="destructive"
+          disabled={stop !== "none"}
+          onSelect={() => onStop(service)}
+        >
+          Stop…
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+/** SVC-6: the drawer's Open: the port, or a menu with one item per port. */
+function OpenButton({ service }: { service: Service }) {
+  const [only] = service.ports;
+  const label = (
+    <>
+      <Icon name="ExternalLink" aria-hidden="true" />
+      Open
+    </>
+  );
+  if (service.ports.length === 1 && only !== undefined) {
+    return (
+      <Button asChild variant="outline" size="sm" className={DRAWER_BUTTON_CLASS}>
+        <a
+          href={serviceUrl(only)}
+          target="_blank"
+          rel="noopener noreferrer"
+          aria-label={`Open :${only} in a new tab`}
+        >
+          {label}
+        </a>
+      </Button>
+    );
+  }
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button variant="outline" size="sm" className={DRAWER_BUTTON_CLASS}>
+          {label}
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">
@@ -658,51 +813,34 @@ function OpenAction({ service }: { service: Service }) {
   );
 }
 
-/** SVC-7: copy the PID, the command line, or a port. */
-function CopyAction({ service }: { service: Service }) {
-  return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <Button
-          variant="ghost"
-          size="icon"
-          className={ACTION_BUTTON_CLASS}
-          aria-label={`Copy from ${service.command}`}
-        >
-          <Icon name="Copy" aria-hidden="true" />
-        </Button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="end">
-        <DropdownMenuItem onSelect={() => void copy(String(service.pid), "the PID")}>
-          Copy PID
-        </DropdownMenuItem>
-        <DropdownMenuItem onSelect={() => void copy(service.command, "the command line")}>
-          Copy command line
-        </DropdownMenuItem>
-        {service.ports.map((port) => (
-          <DropdownMenuItem key={port} onSelect={() => void copy(String(port), `port ${port}`)}>
-            Copy port :{port}
-          </DropdownMenuItem>
-        ))}
-      </DropdownMenuContent>
-    </DropdownMenu>
-  );
+/** The last segment of a path. */
+function fileName(path: string): string {
+  return path.split("/").filter(Boolean).pop() ?? path;
 }
 
 /**
- * SVC-5, SVC-16: the drawer along the bottom: the command line, the log's
- * path with a copy action, and its last 64 KB, kept scrolled to the end
- * unless scrolled up.
+ * SVC-5, SVC-9, SVC-16: the drawer along the bottom: the process's ports,
+ * program, PID, uptime and log file, Open and Stop (Force stop when due), and
+ * its log's last 64 KB in a recessed panel, kept scrolled to the end unless
+ * scrolled up.
  */
 function LogDrawer({
   service,
   ended,
   log,
+  now,
+  stop,
+  onStop,
+  onForceStop,
   onClose,
 }: {
   service: Service;
   ended: boolean;
   log: LogState;
+  now: number;
+  stop: StopState;
+  onStop: () => void;
+  onForceStop: () => void;
   onClose: () => void;
 }) {
   const scroller = useRef<HTMLPreElement>(null);
@@ -722,40 +860,75 @@ function LogDrawer({
   return (
     <section
       aria-label="Log"
-      className="flex h-[40%] min-h-[160px] shrink-0 flex-col border-t border-foreground/8 bg-background"
+      className="flex h-[42%] min-h-[180px] shrink-0 flex-col border-t border-foreground/8 bg-background"
     >
-      <div className="flex h-9 shrink-0 items-center gap-2 border-b border-foreground/8 pl-4 pr-2 text-[12px]">
-        <span className="min-w-0 max-w-[45%] shrink-0 truncate font-mono" title={service.command}>
-          {service.command}
+      <div data-drawer-header="" className="flex h-12 shrink-0 items-center gap-3.5 pl-5 pr-2.5">
+        <span className="shrink-0 font-mono text-[14px] font-semibold tabular-nums">
+          {service.ports.map((port) => `:${port}`).join(" ")}
         </span>
-        {path ? (
-          <>
-            <span className="text-muted-foreground">·</span>
-            <span
-              data-log-path=""
-              className="min-w-0 flex-1 truncate font-mono text-muted-foreground"
-              title={path}
-            >
-              {path}
+        <Program command={service.command} className="text-[14px] no-underline" />
+        <span className={cn("flex min-w-0 items-center gap-3.5 text-[12px]", SUBTLE)}>
+          <span className="shrink-0">
+            PID <b className="font-normal tabular-nums text-foreground/80">{service.pid}</b>
+          </span>
+          <span className="shrink-0">
+            Up{" "}
+            <b className="font-normal tabular-nums text-foreground/80">
+              {formatAgo(service.startedAt, now)}
+            </b>
+          </span>
+          {path ? (
+            <span className="flex min-w-0 items-center gap-1">
+              <span
+                data-log-path=""
+                title={path}
+                className="inline-flex min-w-0 items-center gap-[5px] font-mono text-[12px]"
+              >
+                <Icon name="File" className="size-3 shrink-0" aria-hidden="true" />
+                <span className="truncate">{fileName(path)}</span>
+              </span>
+              <Button
+                variant="ghost"
+                size="icon"
+                className={cn(ICON_BUTTON_CLASS, "size-6 [&_[data-icon-root]]:size-3")}
+                aria-label="Copy log path"
+                onClick={() => void copy(path, "the log path")}
+              >
+                <Icon name="Copy" aria-hidden="true" />
+              </Button>
             </span>
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-7 shrink-0 gap-1.5 px-2 text-[12px] text-muted-foreground [&_[data-icon-root]]:size-3.5"
-              aria-label="Copy log path"
-              onClick={() => void copy(path, "the log path")}
-            >
-              <Icon name="Copy" aria-hidden="true" />
-              path
-            </Button>
+          ) : null}
+        </span>
+        <span className="flex-1" />
+        {ended ? null : (
+          <>
+            <OpenButton service={service} />
+            {stop === "force" ? (
+              <Button
+                variant="outline"
+                size="sm"
+                className={cn(DRAWER_BUTTON_CLASS, STOP_BUTTON_CLASS)}
+                onClick={onForceStop}
+              >
+                Force stop
+              </Button>
+            ) : (
+              <Button
+                variant="outline"
+                size="sm"
+                className={cn(DRAWER_BUTTON_CLASS, STOP_BUTTON_CLASS)}
+                disabled={stop === "stopping"}
+                onClick={onStop}
+              >
+                Stop
+              </Button>
+            )}
           </>
-        ) : (
-          <span className="flex-1" />
         )}
         <Button
           variant="ghost"
           size="icon"
-          className={ACTION_BUTTON_CLASS}
+          className={cn(ICON_BUTTON_CLASS, "[&_[data-icon-root]]:size-4")}
           aria-label="Close log"
           onClick={onClose}
         >
@@ -763,26 +936,21 @@ function LogDrawer({
         </Button>
       </div>
       {ended ? (
-        <p
-          role="status"
-          className="shrink-0 border-b border-foreground/8 px-4 py-1.5 text-[12px] text-muted-foreground"
-        >
+        <p role="status" className={cn("shrink-0 px-5 pb-2 text-[12px]", SUBTLE)}>
           This process ended.
         </p>
       ) : null}
       {log.kind === "log" && log.error ? (
-        <p role="alert" className="shrink-0 px-4 py-1.5 text-[12px] text-destructive">
+        <p role="alert" className="shrink-0 px-5 pb-2 text-[12px] text-destructive">
           Could not read the log: {log.error}
         </p>
       ) : null}
       {log.kind === "none" ? (
-        <p className="px-4 py-3 text-[12.5px] text-muted-foreground">
+        <p className={cn("px-5 py-3 text-[12.5px]", SUBTLE)}>
           This process has no log file: its standard output is not a file.
         </p>
       ) : log.kind === "loading" ? (
-        <p className="px-4 py-3 text-[12.5px] text-muted-foreground">
-          {ended ? "" : "Reading the log…"}
-        </p>
+        <p className={cn("px-5 py-3 text-[12.5px]", SUBTLE)}>{ended ? "" : "Reading the log…"}</p>
       ) : (
         <pre
           ref={scroller}
@@ -791,7 +959,7 @@ function LogDrawer({
             const element = event.currentTarget;
             atEnd.current = element.scrollHeight - element.scrollTop - element.clientHeight < 8;
           }}
-          className="min-h-0 flex-1 overflow-auto whitespace-pre px-4 py-2 font-mono text-[12px] leading-[1.45] text-foreground/90 outline-none"
+          className="mx-3 mb-3 min-h-0 flex-1 overflow-auto whitespace-pre rounded-lg bg-[var(--surface-recessed)] px-3 py-2.5 font-mono text-[12px] leading-[1.55] text-foreground/[0.88] outline-none"
         >
           {text}
         </pre>
