@@ -1,9 +1,9 @@
 # Services replace the Terminals page's main view from a title-bar button, not a page of their own
 
-- Status: accepted
+- Status: superseded
 - Date: 2026-10-17
 - Supersedes: 202610171802
-- Superseded by: none
+- Superseded by: 202610180433
 - Applies to: docs/specs/services.md, docs/specs/session-list.md, app.tsx, components/terminals-page.tsx, components/services-page.tsx, README.md, docs/overview.md, docs/architecture.md
 
 ## Context

@@ -1,6 +1,6 @@
 # The Services table leads with the port and the program, and acts in the drawer
 
-- Status: proposed
+- Status: accepted
 - Date: 2026-10-18
 - Supersedes: 202610171823
 - Superseded by: none
