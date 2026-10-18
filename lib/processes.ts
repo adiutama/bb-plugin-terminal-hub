@@ -31,11 +31,27 @@ export interface ProcessHost {
   exec(command: "lsof" | "ps", args: readonly string[]): Promise<string>;
   /** A whole small file, such as `/proc/<pid>/environ`. */
   readFile(path: string): Promise<string>;
+  /** SVC-27: this server's user id, to tell whose a record is; null where there is none. */
+  uid: number | null;
+  /**
+   * SVC-27: a file opened without following a symlink at its last component,
+   * with its owner and size; its text only when it is a regular file of at
+   * most `maxBytes` bytes. Rejects when it cannot be opened.
+   */
+  readRegularFile(path: string, maxBytes: number): Promise<OpenedFile>;
   /** Up to the last `bytes` bytes of a file, and whether it holds more. */
   readTail(path: string, bytes: number): Promise<{ text: string; truncated: boolean }>;
   /** A signal to a PID, or to a process group when `target` is negative. */
   kill(target: number, signal: "SIGTERM" | "SIGKILL"): void;
 }
+
+/** What `readRegularFile` found at a path. */
+export type OpenedFile =
+  | { kind: "symlink" }
+  /** A folder, a FIFO, a device: anything but a regular file. */
+  | { kind: "other" }
+  /** `text` is null when the file holds more than the bytes asked for. */
+  | { kind: "file"; uid: number; size: number; text: string | null };
 
 /** A process as `ps` lists it. */
 export interface ProcessInfo {
@@ -49,11 +65,18 @@ export interface ProcessInfo {
   command: string;
 }
 
-/** The bb variables a process started with; null when they cannot be read. */
+/**
+ * The bb variables a process started with, and the agent service record's
+ * labels (ADR 202610180513); null when they cannot be read.
+ */
 export interface BbVariables {
   environmentId: string | null;
   threadId: string | null;
   terminalSessionId: string | null;
+  /** SVC-25: `AGENT_SERVICE_RECORD`, the set's `services.json`, as given. */
+  serviceRecord: string | null;
+  /** SVC-26: `AGENT_SERVICE_NAME`, the process's name in its set. */
+  serviceName: string | null;
 }
 
 export interface Listener extends ProcessInfo {
@@ -180,7 +203,7 @@ export function parseFiles(
   return files;
 }
 
-/** The bb variables in `KEY=value` pairs; null when no pair was readable. */
+/** The bb variables and service labels in `KEY=value` pairs; null when no pair was readable. */
 export function bbVariables(pairs: readonly string[]): BbVariables | null {
   const values = new Map<string, string>();
   for (const pair of pairs) {
@@ -192,13 +215,17 @@ export function bbVariables(pairs: readonly string[]): BbVariables | null {
     environmentId: values.get("BB_ENVIRONMENT_ID") || null,
     threadId: values.get("BB_THREAD_ID") || null,
     terminalSessionId: values.get("BB_TERMINAL_SESSION_ID") || null,
+    serviceRecord: values.get("AGENT_SERVICE_RECORD") || null,
+    serviceName: values.get("AGENT_SERVICE_NAME") || null,
   };
 }
 
 /**
  * macOS: `ps eww -o pid=,command=` prints each command followed by its
- * environment. The command is known from `ps`, so what follows it is the
- * environment; bb's ids hold no spaces.
+ * environment, pairs separated by spaces. The command is known from `ps`, so
+ * what follows it is the environment. bb's ids hold no spaces; a value that
+ * does (a record's path under `Application Support`) runs until the next
+ * `KEY=`.
  */
 export function parseEnvironments(
   output: string,
@@ -212,7 +239,7 @@ export function parseEnvironments(
     const rest = match[2] ?? "";
     const command = commands.get(pid);
     const tail = command && rest.startsWith(command) ? rest.slice(command.length) : rest;
-    found.set(pid, bbVariables(tail.trim().split(/\s+/)));
+    found.set(pid, bbVariables(tail.trim().split(/ +(?=[A-Za-z_][A-Za-z0-9_]*=)/)));
   }
   return found;
 }

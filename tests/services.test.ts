@@ -229,6 +229,8 @@ describe("services: what is listed", () => {
         threadId: null,
         threadTitle: null,
         logPath: null,
+        name: null,
+        set: null,
       },
     ]);
   });

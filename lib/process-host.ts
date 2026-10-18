@@ -1,5 +1,6 @@
 // The real ProcessHost: `lsof` and `ps` through execFile (argument arrays, no
-// shell), files through node:fs, signals through process.kill. Only the
+// shell), files through node:fs (records opened without following symlinks),
+// signals through process.kill. Only the
 // server entry uses it; tests use recorded output instead.
 import { execFile } from "node:child_process";
 import { constants } from "node:fs";
@@ -86,6 +87,37 @@ export function nodeProcessHost(): ProcessHost {
       });
     },
     readFile: (path) => readFile(path, "utf8"),
+    uid: typeof process.getuid === "function" ? process.getuid() : null,
+    async readRegularFile(path, maxBytes) {
+      let handle: Awaited<ReturnType<typeof open>>;
+      try {
+        // SVC-27: never through a symlink, and never blocking on a FIFO.
+        handle = await open(
+          path,
+          constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0),
+        );
+      } catch (error) {
+        if ((error as { code?: unknown }).code === "ELOOP") return { kind: "symlink" };
+        throw error;
+      }
+      try {
+        const stat = await handle.stat();
+        if (!stat.isFile()) return { kind: "other" };
+        if (stat.size > maxBytes)
+          return { kind: "file", uid: stat.uid, size: stat.size, text: null };
+        // One byte more than allowed tells a file that grew since stat.
+        const buffer = Buffer.alloc(maxBytes + 1);
+        const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+        return {
+          kind: "file",
+          uid: stat.uid,
+          size: Math.max(stat.size, bytesRead),
+          text: bytesRead > maxBytes ? null : buffer.subarray(0, bytesRead).toString("utf8"),
+        };
+      } finally {
+        await handle.close();
+      }
+    },
     async readTail(path, bytes) {
       const handle = await open(path, "r");
       try {
