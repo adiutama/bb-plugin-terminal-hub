@@ -1,8 +1,8 @@
 # Services
 
-- Status: implemented
+- Status: draft
 - Prefix: SVC
-- Decisions: 202610180433
+- Decisions: 202610180433, 202610180513
 
 A view of the Terminals page listing the servers running in bb environments' folders that are not bb
 terminals, mostly ones agents started detached, so the user can see them,
@@ -48,7 +48,7 @@ A "Services" button in the Terminals page's title bar, beside its close button, 
 - **SVC-4** The Services view holds one full-width table with the columns Port, Program, Started by and Up, headed in sentence case, and a `⋯` menu per row. Each process is one row: its listening ports in ascending order (SVC-6), its program (SVC-24), its starting thread (SVC-18), and the time since it started, right-aligned. The PID is not a column. (ADR 202610180433)
 - **SVC-24** A row's program is the file name of its command line's first word: `node` for `/Users/me/.local/share/mise/installs/node/22.23.2/bin/node --require … apps/api/src/main.ts`. Hovering it shows the full command line, wrapped. (ADR 202610180433)
 - **SVC-14** Rows are grouped under a header row per environment: a chip with the project's initial, the project's name, then a branch icon and the environment's name, named as LIST-34 names it. Groups are ordered as LIST-33 orders projects and environments. An environment with no listed process has no header row (except SVC-11). (ADR 202610180433)
-- **SVC-15** The Services view's header shows the title "Services" and a find field. The find field narrows the rows to those where every whitespace-separated word appears, ignoring case, in a port, the command line, the PID, the environment's name, or the project's name. Groups left with no row are hidden. With no match, the table says "No service matches “…”." (ADR 202610180433)
+- **SVC-15** The Services view's header shows the title "Services" and a find field. The find field narrows the rows to those where every whitespace-separated word appears, ignoring case, in a port, the command line, the PID, the service's name (SVC-26), its set's title or case (SVC-25), the environment's name, or the project's name. Groups left with no row are hidden. With no match, the table says "No service matches “…”." (ADR 202610180433, 202610180513)
 - **SVC-5** Selecting a row opens a drawer along the bottom of the Services view, below the table. Its header shows the process's ports, its program (with the full command line on hover, as SVC-24), its PID, the time since it started, and its log file's name (the full path on hover, with a copy action). It also has Open, Stop and × buttons. Below the header, the file's last 64 KB is shown read-only, scrolled to the end and refreshed while shown. One drawer is open at a time: selecting another row switches it, and × closes it. When standard output is not a regular file, the drawer says the process has no log file. (ADR 202610180433)
 - **SVC-16** When the selected process is no longer listed, its drawer says it ended and keeps the last log shown until closed. (ADR 202610180433)
 - **SVC-17** With no listed process, the Services view says "No servers running in your environments." and explains that it lists processes listening on a port inside an environment's folder. (ADR 202610180433)
@@ -65,3 +65,10 @@ A "Services" button in the Terminals page's title bar, beside its close button, 
 - **SVC-21** The URL carries neither the Services view nor a selected row: reloading shows the terminals, the view opens with no row selected and the drawer closed, and switching views or selecting a row adds no history entry. (ADR 202610180433)
 - **SVC-22** bb's own processes are never listed and never signalled: the plugin server's process, its ancestors, every process in their process groups, and any process running bb's executable. (ADR 202610180433)
 - **SVC-23** Switching to the Services view and back keeps the terminals' state: the selected environment and terminal, and each terminal's session, are as they were. (ADR 202610180433)
+- **SVC-25** Rows whose processes have the same `AGENT_SERVICE_RECORD` environment variable form a set: within their environment group they are shown together under a set row, ordered by port. The set row shows the record's `title` when the record is readable (SVC-27), with its `case` on hover; otherwise the name of the folder holding the record. Unlabelled rows follow the sets, as today. (ADR 202610180513)
+- **SVC-26** A row whose process has `AGENT_SERVICE_NAME` shows that name in the Program column, with the program (SVC-24) after it in muted text (`api  node`); hovering still shows the full command line. (ADR 202610180513)
+- **SVC-27** The record is read only when `AGENT_SERVICE_RECORD` is an absolute path to a regular file, not a symlink, owned by the current user, of at most 64 KiB, holding a JSON object with `version` 1 and a `services` array. Otherwise it is unreadable and only SVC-25's grouping and SVC-26's name apply. Fields of the wrong type, entries missing a required field, and unknown fields are ignored one by one. (ADR 202610180513)
+- **SVC-28** When the record is readable and has an entry whose `name` matches the row's, the drawer shows a Connect section: that entry's URLs, each with its label, and the set's credentials, each with its label and username. Copy actions give each full value. (ADR 202610180513)
+- **SVC-29** Credential secrets and the password in a URL's user info are shown as `••••` until the user presses Show, in the drawer only; copying gives the full value. A URL is a link, opening in a new browser tab, only when its scheme is `http` or `https` and its host is `127.0.0.1`, `localhost` or `::1`; other URLs are copy-only. Record strings are shown as plain text. (ADR 202610180513)
+- **SVC-30** Nothing read from a record changes which processes are listed, which log is shown, or what Stop signals. (ADR 202610180513)
+
