@@ -1,5 +1,6 @@
 // `bb terminal-hub services`: what the Services page lists for one
-// environment, for agents (AGENT-7, AGENT-8).
+// environment, for agents (AGENT-7, AGENT-8), with each process's service name
+// and set; agents read the record itself for URLs and credentials.
 import type { Service, ServicesList } from "./services-contract";
 import { formatAgo } from "./time";
 
@@ -24,7 +25,25 @@ export function servicesIn(list: ServicesList, environmentId: string): Environme
   };
 }
 
-/** AGENT-7: each process with its ports, PID, command line, starting thread, and log path. */
+/**
+ * AGENT-7: a process's service name and its set's title, from the agent
+ * service record's labels (ADR 202610180513); the record's path when it has no
+ * readable title. Never its URLs or credentials.
+ */
+function serviceLine(service: Service): string | null {
+  const set = service.set
+    ? service.set.title !== null
+      ? `set "${service.set.title}"`
+      : `set record ${service.set.record}`
+    : null;
+  const parts = [service.name ? `service ${service.name}` : null, set].filter(Boolean);
+  return parts.length > 0 ? `    ${parts.join(", ")}` : null;
+}
+
+/**
+ * AGENT-7: each process with its ports, PID, command line, service name and
+ * set title, starting thread, and log path.
+ */
 export function formatServicesText(listing: EnvironmentServices, now: number): string {
   const heading = `Services in environment ${listing.environmentId}`;
   const out = [listing.place ? `${heading} (${listing.place})` : heading];
@@ -40,6 +59,8 @@ export function formatServicesText(listing: EnvironmentServices, now: number): s
     out.push(
       `  ${ports}  pid ${service.pid}  up ${formatAgo(service.startedAt, now)}  ${service.command}`,
     );
+    const labelled = serviceLine(service);
+    if (labelled) out.push(labelled);
     if (service.threadId) {
       out.push(
         service.threadTitle === null
@@ -52,7 +73,10 @@ export function formatServicesText(listing: EnvironmentServices, now: number): s
   return `${out.join("\n")}\n`;
 }
 
-/** AGENT-8: machine-readable, one entry per process. */
+/**
+ * AGENT-8: machine-readable, one entry per process, with its service name and
+ * set (`record`, `id`, `title`); never a URL or a credential.
+ */
 export function servicesJson(listing: EnvironmentServices) {
   return {
     environmentId: listing.environmentId,
@@ -66,6 +90,10 @@ export function servicesJson(listing: EnvironmentServices) {
       threadId: service.threadId,
       logPath: service.logPath,
       environmentId: service.environmentId,
+      name: service.name,
+      set: service.set
+        ? { record: service.set.record, id: service.set.id, title: service.set.title }
+        : null,
     })),
   };
 }

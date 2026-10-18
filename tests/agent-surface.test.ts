@@ -7,6 +7,8 @@ import { fakeSdk, terminal, thread, type World, world } from "./fixtures/fake-bb
 import { STARTED_AT } from "./fixtures/fake-host";
 import {
   disposeServers,
+  labelledMachine,
+  RECORD,
   servicesMachine,
   servicesWorld,
   startServer,
@@ -198,7 +200,7 @@ describe("agent surface: services", () => {
     expect(none.stderr).toContain("--environment");
   });
 
-  it("AGENT-8: --json prints each process's pid, ports, command, startedAt, threadId, logPath, and environmentId", async () => {
+  it("AGENT-8: --json prints each process's pid, ports, command, startedAt, threadId, logPath, environmentId, name, and set", async () => {
     const server = await startServer(servicesWorld(), servicesMachine());
     const result = await server.runCli(["services", "--environment", "env_b", "--json"]);
     expect(JSON.parse(result.stdout ?? "")).toEqual({
@@ -214,8 +216,82 @@ describe("agent surface: services", () => {
           threadId: null,
           logPath: null,
           environmentId: "env_b",
+          name: null,
+          set: null,
         },
       ],
     });
+  });
+
+  it("AGENT-7: prints each labelled process's service name and set title, or the record's path when it has none; never URLs or credentials", async () => {
+    const server = await startServer(servicesWorld(), labelledMachine());
+    const result = await server.runCli(["services", "--environment", "env_wt"]);
+    const lines = (result.stdout ?? "").split("\n");
+    const lineAfter = (pid: number) => lines[lines.findIndex((l) => l.includes(`pid ${pid} `)) + 1];
+    expect(lineAfter(33438)).toBe(
+      '    service postgres, set "kai-platform — multi-org access case"',
+    );
+    expect(lineAfter(48345)).toBe('    service api, set "kai-platform — multi-org access case"');
+    expect(result.stdout).not.toMatch(/abcd1234|kai_app_dev|postgres:\/\/|Case login/);
+
+    const unreadable = await startServer(servicesWorld(), labelledMachine(null));
+    const text = (await unreadable.runCli(["services", "--environment", "env_wt"])).stdout ?? "";
+    expect(text).toContain(`    service api, set record ${RECORD}`);
+    // Unlabelled processes print as before.
+    const plain = await server.runCli(["services", "--environment", "env_b"]);
+    expect(plain.stdout).not.toContain("service ");
+  });
+
+  it("AGENT-8: --json adds each process's name and set (record, id, title); never URLs or credentials", async () => {
+    const server = await startServer(servicesWorld(), labelledMachine());
+    const result = await server.runCli(["services", "--environment", "env_wt", "--json"]);
+    const parsed = JSON.parse(result.stdout ?? "");
+    expect(parsed.services.map((s: any) => [s.pid, s.name, s.set])).toEqual([
+      [
+        33438,
+        "postgres",
+        {
+          record: RECORD,
+          id: "20261017-201623-d32d",
+          title: "kai-platform — multi-org access case",
+        },
+      ],
+      [
+        48345,
+        "api",
+        {
+          record: RECORD,
+          id: "20261017-201623-d32d",
+          title: "kai-platform — multi-org access case",
+        },
+      ],
+    ]);
+    expect(result.stdout).not.toMatch(/abcd1234|kai_app_dev|postgres:\/\/|"case"|credentials|urls/);
+  });
+
+  it("AGENT-10: the skill tells agents that start a detached server to label it with the agent service record", async () => {
+    const skill = await readFile("skills/terminal-hub/SKILL.md", "utf8");
+    const section = skill.slice(
+      skill.indexOf("## Labelling a detached server"),
+      skill.indexOf("## When your work is done"),
+    );
+    expect(section).toContain("agent service record, version 1");
+    expect(section).toContain("AGENT_SERVICE_RECORD=");
+    expect(section).toContain("AGENT_SERVICE_NAME=");
+    expect(section).toContain("services.json");
+    expect(section).toContain('"version": 1');
+    for (const field of [
+      "title",
+      "case",
+      "credentials",
+      "services",
+      "name",
+      "ports",
+      "urls",
+      "log",
+    ]) {
+      expect(section).toContain(`\`${field}\``);
+    }
+    expect(section).not.toContain("throwaway-services");
   });
 });
