@@ -78,32 +78,38 @@ alone.
 Agents often start servers detached (`nohup … &`, a database's own daemon) so
 they outlive the session; those never show up as terminals. Press **Services**
 in the Terminals page's title bar, beside the close button, to see them in
-place of the terminals (the button shows how many run): every process on this machine that listens on a TCP
-port and belongs to one of your environments, either because an agent of that
+place of the terminals (the button shows how many run): every process on this
+machine that listens on a TCP port and belongs to one of your environments, either because an agent of that
 environment started it (bb's `BB_ENVIRONMENT_ID` variable) or because it runs
 inside the environment's folder. Processes with a terminal (a bb terminal,
 Terminal.app, iTerm) are left out, and bb's own processes are never listed or
 stopped.
 
-- One table, grouped under `project › environment`: each process's ports,
-  command line, the thread that started it (a link to it), PID, and how long
-  it has been up. **Find** narrows the rows by port, command, PID, or name.
-- Click a row to read its log (the last 64 KB of the file its output goes to)
-  in a drawer below the table, kept at the end as it grows. **×** closes it.
-- Each row can **Open** its port at `http://127.0.0.1:<port>`, **Copy** its PID,
-  command line, or a port, and **Stop** it. Stop asks first and says how many
-  processes it signals: a launch such as `npm run dev` started in its own
-  process group is stopped as a whole, so a watcher cannot restart the server,
-  when every process in it can be told apart; otherwise only the listener.
-  If it is still running 5 seconds later, **Force stop** sends SIGKILL. Before
-  any signal, the process is checked to still be the one listed.
+- One table, grouped by project and environment as bb's sidebar shows them:
+  each process's port (a link that opens `http://127.0.0.1:<port>`), its
+  program (`node`, `postgres`; point at it for the full command line), the
+  thread that started it (a link to the thread), and how long it has been up.
+  **Find** narrows the rows by port, command line, PID, or name.
+- Each row's **⋯** menu copies its PID, command line, or a port, and offers
+  **Stop…**.
+- Click a row to open a drawer below the table with its port, program, PID,
+  uptime and log file (copy the path from there), **Open** and **Stop**
+  buttons, and the log itself (the last 64 KB of the file its output goes
+  to), kept at the end as it grows. **×** closes it.
+- Stop asks first and says how many processes it signals: a launch such as
+  `npm run dev` started in its own process group is stopped as a whole, so a
+  watcher cannot restart the server, when every process in it can be told
+  apart; otherwise only the listener. The row then says **Stopping…**; if the
+  process is still running 5 seconds later, **Force stop** (on the row and in
+  the drawer) sends SIGKILL. Before any signal, the process is checked to
+  still be the one listed.
 - Press **Services** again, or pick an environment in the rail, to return to
   the terminals as you left them. The view is not part of the URL, so a
   reload shows the terminals.
 - The list refreshes every 5 seconds while Services is shown, and the button's
-  count every 30 seconds otherwise. Environments on
-  another machine are shown as not checked. It needs `lsof` (macOS and Linux);
-  without it the page says so.
+  count every 30 seconds otherwise. Environments on another machine are shown
+  as not checked. It needs `lsof` (macOS and Linux); without it the view says
+  so.
 
 ### For agents
 
