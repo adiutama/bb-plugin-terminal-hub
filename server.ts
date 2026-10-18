@@ -34,6 +34,7 @@ export async function createPlugin(bb: BbPluginApi, host: ProcessHost) {
     "services.stop": ({ pid, startedAt, force, expected }) =>
       services.stop(pid, startedAt, force, expected),
     "services.log": ({ pid, startedAt }) => services.log(pid, startedAt),
+    "services.connect": ({ pid, startedAt }) => services.connect(pid, startedAt),
   });
 
   // Resolve the WASM from the pinned engine package in both source and dist

@@ -35,7 +35,22 @@ export interface Machine {
   processes: FakeProcess[];
   /** File contents by path, for log tails. */
   files: Record<string, string>;
+  /** Agent service records by path (SVC-27); a string is a regular file the user owns. */
+  records?: Record<string, string | FakeFile>;
+  /** The server's user id; 501 unless set. */
+  uid?: number | null;
 }
+
+/** A file as `readRegularFile` finds it. */
+export interface FakeFile {
+  /** A symlink, or not a regular file (a folder, a FIFO). */
+  kind?: "symlink" | "other";
+  text?: string;
+  /** Its owner; the server's user unless set. */
+  uid?: number;
+}
+
+export const UID = 501;
 
 export const START = "Sat Oct 17 20:16:31 2026";
 export const STARTED_AT = Date.parse(START);
@@ -58,6 +73,8 @@ const shortName = (command: string) => command.split(" ")[0]?.split("/").pop() ?
 export function fakeHost(m: Machine) {
   const kills: { target: number; signal: string }[] = [];
   const calls: { command: string; args: string[] }[] = [];
+  /** Paths `readRegularFile` opened. */
+  const reads: string[] = [];
   const asked = (args: readonly string[]) => {
     const pids = pidsOf(args);
     return m.processes.filter((p) => pids === null || pids.has(p.pid));
@@ -122,6 +139,24 @@ export function fakeHost(m: Machine) {
         .map(([key, value]) => `${key}=${value}`)
         .join("\0")}\0`;
     },
+    uid: m.uid === undefined ? UID : m.uid,
+    async readRegularFile(path, maxBytes) {
+      reads.push(path);
+      const found = m.records?.[path];
+      if (found === undefined) {
+        throw Object.assign(new Error(`ENOENT: ${path}`), { code: "ENOENT" });
+      }
+      const file: FakeFile = typeof found === "string" ? { text: found } : found;
+      if (file.kind === "symlink") return { kind: "symlink" };
+      if (file.kind === "other") return { kind: "other" };
+      const data = Buffer.from(file.text ?? "");
+      return {
+        kind: "file",
+        uid: file.uid ?? UID,
+        size: data.length,
+        text: data.length > maxBytes ? null : data.toString("utf8"),
+      };
+    },
     async readTail(path, bytes) {
       const text = m.files[path];
       if (text === undefined) throw new Error(`ENOENT: no such file or directory, open '${path}'`);
@@ -141,7 +176,7 @@ export function fakeHost(m: Machine) {
       );
     },
   };
-  return { host, kills, calls };
+  return { host, kills, calls, reads };
 }
 
 function envPairs(env: Record<string, string>): string {

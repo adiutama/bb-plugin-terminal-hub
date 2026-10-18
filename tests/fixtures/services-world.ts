@@ -5,7 +5,7 @@
 import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
 import { createPlugin } from "../../server";
 import { fakeSdk, thread, type World, world } from "./fake-bb";
-import { agentEnv, fakeHost, type Machine, machine } from "./fake-host";
+import { agentEnv, type FakeFile, fakeHost, type Machine, machine } from "./fake-host";
 
 export const WORKTREE = "/Users/me/worktrees/thr-1/repo";
 
@@ -130,6 +130,63 @@ export function servicesMachine(): Machine {
   );
 }
 
+/** An agent service record's path, as a producer sets `AGENT_SERVICE_RECORD`. */
+export const RECORD = "/Users/me/.agents/throwaway-services/20261017-201623-d32d/services.json";
+
+/** The record version 1 describes (throwaway-services `references/record.md`). */
+export function recordJson(overrides: Record<string, unknown> = {}) {
+  return {
+    version: 1,
+    id: "20261017-201623-d32d",
+    title: "kai-platform — multi-org access case",
+    case: "adi@strata.co.jp is platform admin, writer at Demo AM Co, read-only at Contoso",
+    worktree: WORKTREE,
+    createdAt: "2026-10-17T20:16:23+09:00",
+    credentials: [{ label: "Case login", username: "adi@strata.co.jp", secret: "abcd1234" }],
+    services: [
+      {
+        name: "postgres",
+        kind: "postgres 16",
+        ports: [55400],
+        urls: [
+          { label: "Superuser", url: "postgres://postgres@127.0.0.1:55400/kai_platform" },
+          { label: "App role", url: "postgres://kai_app:kai_app_dev@127.0.0.1:55400/kai_platform" },
+        ],
+        log: "/Users/me/.agents/throwaway-services/20261017-201623-d32d/pg.log",
+      },
+      {
+        name: "api",
+        kind: "app",
+        ports: [55401],
+        urls: [{ label: "App", url: "http://127.0.0.1:55401" }],
+        log: "/Users/me/.agents/throwaway-services/20261017-201623-d32d/app-kai.log",
+      },
+    ],
+    ...overrides,
+  };
+}
+
+/** The variables a producer adds to each process it starts. */
+export function labels(name: string, record = RECORD): Record<string, string> {
+  return { AGENT_SERVICE_RECORD: record, AGENT_SERVICE_NAME: name };
+}
+
+/**
+ * servicesMachine with its Postgres and API labelled as one set, whose record
+ * is `record` (missing when null).
+ */
+export function labelledMachine(
+  record: string | FakeFile | null = JSON.stringify(recordJson()),
+): Machine {
+  const m = servicesMachine();
+  for (const p of m.processes) {
+    if ([48265, 48304, 48345].includes(p.pid)) p.env = { ...p.env, ...labels("api") };
+    if (p.pid === 33438) p.env = { ...p.env, ...labels("postgres") };
+  }
+  m.records = record === null ? {} : { [RECORD]: record };
+  return m;
+}
+
 const disposers: (() => Promise<void>)[] = [];
 
 /** Disposes every server started since the last call. */
@@ -154,6 +211,7 @@ export async function startServer(w: World, m: Machine) {
     machine: m,
     kills: fake.kills,
     calls: fake.calls,
+    reads: fake.reads,
     call,
     runCli: harness.behavior.runCli.bind(harness.behavior),
     /**

@@ -1,6 +1,7 @@
 // The Services page's server side: which listening processes belong to bb's
-// environments (SVC-2, SVC-3), who started them (SVC-18), and stopping them
-// (SVC-8, SVC-9, SVC-13, SVC-19). Runs in the server entry, on the machine
+// environments (SVC-2, SVC-3), who started them (SVC-18), which set they
+// belong to (SVC-25 to SVC-28), and stopping them (SVC-8, SVC-9, SVC-13,
+// SVC-19). Runs in the server entry, on the machine
 // running bb; the page and `bb terminal-hub services` both read it.
 import type { EnvironmentRecord } from "./hub-store";
 import { environmentInfos, message } from "./hub-store";
@@ -15,7 +16,9 @@ import {
   readVariables,
   scanListeners,
 } from "./processes";
+import { readRecord, type ServiceRecord } from "./service-record";
 import type {
+  Connect,
   Service,
   ServiceGroup,
   ServicesList,
@@ -89,6 +92,36 @@ interface Listed {
   service: Service;
 }
 
+/** SVC-27: each record read in one scan, by path, so a set's record is read once. */
+type RecordReads = Map<string, Promise<ServiceRecord | null>>;
+
+/**
+ * SVC-25: within an environment, each set's rows together and by port, sets
+ * ordered by their lowest port; unlabelled rows after them, by port.
+ */
+export function orderServices(services: readonly Service[]): Service[] {
+  const firstPort = (service: Service) => service.ports[0] ?? 0;
+  const setPort = new Map<string, number>();
+  for (const service of services) {
+    if (!service.set) continue;
+    const known = setPort.get(service.set.record);
+    if (known === undefined || firstPort(service) < known) {
+      setPort.set(service.set.record, firstPort(service));
+    }
+  }
+  return [...services].sort((a, b) => {
+    if (a.set && b.set) {
+      const set =
+        (setPort.get(a.set.record) ?? 0) - (setPort.get(b.set.record) ?? 0) ||
+        a.set.record.localeCompare(b.set.record);
+      if (set !== 0) return set;
+    } else if (a.set || b.set) {
+      return a.set ? -1 : 1;
+    }
+    return firstPort(a) - firstPort(b) || a.pid - b.pid;
+  });
+}
+
 type Target =
   | { kind: "changed" }
   | { kind: "group"; service: Service; pgid: number; members: ProcessInfo[] }
@@ -135,8 +168,9 @@ export class Services {
     }
     const byEnvironment = new Map<string, Service[]>();
     const latest = new Map<number, Listed>();
+    const records: RecordReads = new Map();
     for (const listener of scan.listeners) {
-      const service = await this.serviceFor(index, listener);
+      const service = await this.serviceFor(index, listener, records);
       if (!service) continue;
       latest.set(service.pid, { service });
       const services = byEnvironment.get(service.environmentId) ?? [];
@@ -165,8 +199,7 @@ export class Services {
       }
       const services = byEnvironment.get(env.id);
       if (!services) continue;
-      services.sort((a, b) => (a.ports[0] ?? 0) - (b.ports[0] ?? 0) || a.pid - b.pid);
-      groups.push({ ...group, checked: true, services });
+      groups.push({ ...group, checked: true, services: orderServices(services) });
     }
     return {
       available: true,
@@ -251,10 +284,34 @@ export class Services {
     }
   }
 
+  /**
+   * SVC-28: the URLs of a listed process's entry in its record, and the set's
+   * credentials, as the record says now. Only for a process the latest scan
+   * listed, by the labels it was listed with.
+   */
+  async connect(pid: number, startedAt: number): Promise<Connect> {
+    const listed = this.latest.get(pid);
+    if (!listed || listed.service.startedAt !== startedAt) return { outcome: "ended" };
+    const { name, set } = listed.service;
+    if (name === null || set === null) return { outcome: "none" };
+    const record = await readRecord(this.host, set.record);
+    const entry = record?.services.find((service) => service.name === name);
+    if (!record || !entry) return { outcome: "none" };
+    return { outcome: "connect", urls: entry.urls, credentials: record.credentials };
+  }
+
   // ── internals ─────────────────────────────────────────────────────────
 
-  /** SVC-2, SVC-3, SVC-18: the listener as a listed process, or null when it is not one. */
-  private async serviceFor(index: EnvironmentIndex, listener: Listener): Promise<Service | null> {
+  /**
+   * SVC-2, SVC-3, SVC-18: the listener as a listed process, or null when it
+   * is not one. SVC-25, SVC-26, SVC-30: its labels and record only name it,
+   * once it is listed.
+   */
+  private async serviceFor(
+    index: EnvironmentIndex,
+    listener: Listener,
+    records: RecordReads,
+  ): Promise<Service | null> {
     if (listener.ports.length === 0) return null;
     // SVC-3: in a terminal, a bb one or any other.
     if (listener.tty !== null || listener.variables?.terminalSessionId) return null;
@@ -270,6 +327,25 @@ export class Services {
       threadId,
       threadTitle: threadId ? await this.threadTitle(threadId) : null,
       logPath: listener.logPath,
+      name: listener.variables?.serviceName ?? null,
+      set: await this.setOf(listener.variables?.serviceRecord ?? null, records),
+    };
+  }
+
+  /** SVC-25, SVC-27: the set a record path names, with its title when readable. */
+  private async setOf(path: string | null, records: RecordReads): Promise<Service["set"]> {
+    if (path === null) return null;
+    let read = records.get(path);
+    if (!read) {
+      read = readRecord(this.host, path);
+      records.set(path, read);
+    }
+    const record = await read;
+    return {
+      record: path,
+      id: record?.id ?? null,
+      title: record?.title ?? null,
+      case: record?.case ?? null,
     };
   }
 
