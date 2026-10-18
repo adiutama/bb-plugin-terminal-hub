@@ -84,6 +84,14 @@ const row = (pid: number) => {
   return found;
 };
 const drawer = () => screen.getByRole("region", { name: "Log" });
+/** SVC-7: a row's ⋯ menu. */
+const rowMenu = (pid: number) =>
+  openMenu(within(row(pid)).getByRole("button", { name: /^More actions for / }));
+/** SVC-8: Stop… from a row's ⋯ menu. */
+async function stopFromRow(pid: number) {
+  const menu = await rowMenu(pid);
+  fireEvent.click(within(menu).getByRole("menuitem", { name: "Stop…" }));
+}
 const listCalls = (rpc: Record<string, { mock: { calls: unknown[] } }>) =>
   rpc["services.list"]!.mock.calls.length;
 
@@ -124,26 +132,40 @@ describe("services page", () => {
     expect(servicesButton()).toHaveTextContent(/^Services$/);
   });
 
-  it("SVC-4: one full-width table with port, process, started by, PID, up, and actions; a row per process", async () => {
+  it("SVC-4, SVC-24: one full-width table with Port, Program, Started by, Up, and a ⋯ menu; a row per process, no PID column", async () => {
     vi.setSystemTime(STARTED_AT + 2 * 3_600_000);
     await mountServices();
     await screen.findByRole("table", { name: "Services" });
     const headers = within(table().querySelector("thead") as HTMLElement)
       .getAllByRole("columnheader")
       .map((th) => th.textContent);
-    expect(headers).toEqual(["Port", "Process", "Started by", "PID", "Up", "Actions"]);
+    expect(headers).toEqual(["Port", "Program", "Started by", "Up", "Actions"]);
     expect(table()).toHaveClass("w-full");
     const vite = within(row(51002)).getAllByRole("cell");
+    expect(vite).toHaveLength(5);
     expect(vite[0]).toHaveTextContent(":5173 :24678");
-    const command = within(vite[1]!).getByRole("button");
-    expect(command).toHaveTextContent("node node_modules/.bin/vite");
-    expect(command).toHaveAttribute("title", "node node_modules/.bin/vite");
-    expect(command.className).toContain("truncate");
-    expect(vite[3]).toHaveTextContent("51002");
-    expect(within(row(33438)).getAllByRole("cell")[4]).toHaveTextContent("2h");
+    expect(vite[1]).toHaveTextContent(/^node$/);
+    expect(row(51002)).not.toHaveTextContent("51002");
+    const up = within(row(33438)).getAllByRole("cell")[3]!;
+    expect(up).toHaveTextContent("2h");
+    expect(up).toHaveClass("text-right");
+    expect(
+      within(row(33438)).getByRole("button", { name: /^More actions for / }),
+    ).toBeInTheDocument();
   });
 
-  it("SVC-14, SVC-11: rows under project › environment headers in bb's order; another host's environment says not checked", async () => {
+  it("SVC-24: the program is the file name of the command's first word; hovering shows the full command line", async () => {
+    await mountServices();
+    await screen.findByRole("table", { name: "Services" });
+    const program = within(row(33438)).getByText("postgres");
+    expect(within(row(48345)).getAllByRole("cell")[1]).toHaveTextContent(/^node$/);
+    fireEvent.focus(program);
+    expect(await screen.findByRole("tooltip")).toHaveTextContent(
+      "/opt/homebrew/bin/postgres -D /Users/me/.agents/pg -p 55400",
+    );
+  });
+
+  it("SVC-14, SVC-11: rows under headers with the project's initial, its name, and the environment, in bb's order; another host's says not checked", async () => {
     await mountServices();
     await screen.findByRole("table", { name: "Services" });
     const headers = within(table())
@@ -151,16 +173,16 @@ describe("services page", () => {
       .filter((th) => th.getAttribute("scope") === "colgroup")
       .map((th) => th.textContent);
     expect(headers).toEqual([
-      "kai-platform › bb/map-all-page-urls",
-      "kai-platform › remote-boxnot checked (other host)",
-      "terminal-hub › main",
+      "Kkai-platformbb/map-all-page-urls",
+      "Kkai-platformremote-box",
+      "Tterminal-hubmain",
     ]);
     const groups = table().querySelectorAll("tbody");
     expect(within(groups[0] as HTMLElement).getAllByRole("row")).toHaveLength(3);
-    expect(within(groups[1] as HTMLElement).getAllByRole("row")).toHaveLength(1);
+    expect(groups[1]).toHaveTextContent("Not checked: this environment is on another machine.");
   });
 
-  it("SVC-18: a known starting thread shows as a link to it; others leave the cell empty", async () => {
+  it("SVC-18: a known starting thread is a link that opens the thread without selecting the row; others leave the cell empty", async () => {
     const { slot } = await mountServices();
     await screen.findByRole("table", { name: "Services" });
     fireEvent.click(within(row(48345)).getByRole("button", { name: "Map all page URLs" }));
@@ -168,14 +190,17 @@ describe("services page", () => {
       method: "toThread",
       threadId: "thr_map",
     });
+    expect(row(48345)).not.toHaveAttribute("data-selected");
+    expect(screen.queryByRole("region", { name: "Log" })).toBeNull();
     expect(within(row(51002)).getAllByRole("cell")[2]).toBeEmptyDOMElement();
   });
 
-  it("SVC-15: the header shows the title, a find field, and the running count; finding narrows rows by every word", async () => {
+  it("SVC-15: the header shows the title and a find field; finding narrows rows by every word, the PID included", async () => {
     await mountServices();
     await screen.findByRole("table", { name: "Services" });
-    expect(screen.getByRole("heading", { name: "Services" })).toBeInTheDocument();
-    expect(screen.getByText("3 running")).toBeInTheDocument();
+    const view = screen.getByRole("region", { name: "Services" });
+    expect(within(view).getByRole("heading", { name: "Services" })).toBeInTheDocument();
+    expect(view).not.toHaveTextContent("running");
     const find = screen.getByRole("textbox", { name: "Find service" });
     const shownPids = () =>
       Array.from(table().querySelectorAll<HTMLElement>("[data-service-pid]")).map((r) =>
@@ -185,15 +210,17 @@ describe("services page", () => {
     expect(shownPids()).toEqual([33438, 48345]);
     fireEvent.change(find, { target: { value: "KAI postgres" } });
     expect(shownPids()).toEqual([33438]);
-    // The environment's name, and the PID.
+    // The environment's name, the PID, and the full command line.
     fireEvent.change(find, { target: { value: "main 51002" } });
     expect(shownPids()).toEqual([51002]);
+    fireEvent.change(find, { target: { value: "apps/api" } });
+    expect(shownPids()).toEqual([48345]);
     // Groups with no row left are hidden, the other host's included.
+    fireEvent.change(find, { target: { value: "vite" } });
     expect(table()).not.toHaveTextContent("kai-platform");
     fireEvent.change(find, { target: { value: "nginx" } });
     expect(screen.queryByRole("table")).toBeNull();
     expect(screen.getByText("No service matches “nginx”.")).toBeInTheDocument();
-    expect(screen.getByText("3 running")).toBeInTheDocument();
   });
 
   it("SVC-17: with nothing listed, the page says so and what it lists", async () => {
@@ -212,7 +239,7 @@ describe("services page", () => {
     m.processes = m.processes.filter((p) => ![48345, 33438, 51002].includes(p.pid));
     await mountServices(servicesWorld(), m);
     expect(await screen.findByText("No servers running in your environments.")).toBeVisible();
-    expect(table()).toHaveTextContent("kai-platform › remote-boxnot checked (other host)");
+    expect(table()).toHaveTextContent("Not checked: this environment is on another machine.");
     expect(table().querySelectorAll("[data-service-pid]")).toHaveLength(0);
   });
 
@@ -228,7 +255,9 @@ describe("services page", () => {
       .getAllByRole("columnheader")
       .filter((th) => th.getAttribute("scope") === "colgroup");
     expect(notChecked).toHaveLength(4);
-    for (const th of notChecked) expect(th).toHaveTextContent("not checked (other host)");
+    expect(
+      within(table()).getAllByText("Not checked: this environment is on another machine."),
+    ).toHaveLength(4);
   });
 
   it("SVC-12: without lsof the page says detection is unavailable instead of an empty list", async () => {
@@ -243,7 +272,8 @@ describe("services page", () => {
     expect(screen.queryByText("No servers running in your environments.")).toBeNull();
   });
 
-  it("SVC-5: selecting a row opens a drawer with its command, log path to copy, and log tail; another row switches it; × closes it", async () => {
+  it("SVC-5: selecting a row opens a drawer with its ports, program, PID, uptime, log file to copy, Open, Stop, and the log tail; another row switches it; × closes it", async () => {
+    vi.setSystemTime(STARTED_AT + 2 * 3_600_000);
     const { slot } = await mountServices();
     await screen.findByRole("table", { name: "Services" });
     expect(screen.queryByRole("region", { name: "Log" })).toBeNull();
@@ -254,8 +284,18 @@ describe("services page", () => {
         "database system is ready to accept connections",
       ),
     );
-    expect(drawer()).toHaveTextContent("/opt/homebrew/bin/postgres -D /Users/me/.agents/pg");
-    expect(drawer().querySelector("[data-log-path]")).toHaveTextContent("/Users/me/.agents/pg.log");
+    const header = drawer().querySelector<HTMLElement>("[data-drawer-header]")!;
+    expect(header).toHaveTextContent(":55400");
+    expect(header).toHaveTextContent("postgres");
+    expect(header).toHaveTextContent("PID 33438");
+    expect(header).toHaveTextContent("Up 2h");
+    const file = drawer().querySelector("[data-log-path]")!;
+    expect(file).toHaveTextContent(/^pg\.log$/);
+    expect(file).toHaveAttribute("title", "/Users/me/.agents/pg.log");
+    expect(
+      within(drawer()).getByRole("link", { name: "Open :55400 in a new tab" }),
+    ).toHaveAttribute("href", "http://127.0.0.1:55400");
+    expect(within(drawer()).getByRole("button", { name: "Stop" })).toBeInTheDocument();
     fireEvent.click(within(drawer()).getByRole("button", { name: "Copy log path" }));
     await waitFor(() =>
       expect(slot.inspection.experimental_clipboardWrites).toEqual([
@@ -264,7 +304,7 @@ describe("services page", () => {
     );
     expect(drawer().querySelector("[data-log]")?.tagName).toBe("PRE");
 
-    fireEvent.click(within(row(48345)).getByRole("button", { name: /^\/usr\/local\/bin\/node/ }));
+    fireEvent.click(within(row(48345)).getAllByRole("cell")[3]!);
     await waitFor(() => expect(drawer()).toHaveTextContent("listening on :55401"));
     expect(screen.getAllByRole("region", { name: "Log" })).toHaveLength(1);
     expect(row(33438)).not.toHaveAttribute("data-selected");
@@ -310,16 +350,24 @@ describe("services page", () => {
     expect(screen.queryByRole("region", { name: "Log" })).toBeNull();
   });
 
-  it("SVC-6: Open opens http://127.0.0.1:<port> in a new tab; with several ports, the chosen one", async () => {
+  it("SVC-6: each port is a link to http://127.0.0.1:<port> in a new tab; the drawer's Open does the same, with a menu for several ports", async () => {
     await mountServices();
     await screen.findByRole("table", { name: "Services" });
     const open = within(row(33438)).getByRole("link", { name: "Open :55400 in a new tab" });
     expect(open).toHaveAttribute("href", "http://127.0.0.1:55400");
     expect(open).toHaveAttribute("target", "_blank");
     expect(open).toHaveAttribute("rel", "noopener noreferrer");
-    const menu = await openMenu(
-      within(row(51002)).getByRole("button", { name: /^Open a port of / }),
-    );
+    expect(
+      within(row(51002))
+        .getAllByRole("link")
+        .map((link) => link.getAttribute("href")),
+    ).toEqual(["http://127.0.0.1:5173", "http://127.0.0.1:24678"]);
+    // Opening a port does not select the row.
+    fireEvent.click(open);
+    expect(row(33438)).not.toHaveAttribute("data-selected");
+
+    fireEvent.click(row(51002));
+    const menu = await openMenu(within(drawer()).getByRole("button", { name: "Open" }));
     const items = within(menu).getAllByRole("menuitem");
     expect(items.map((item) => [item.textContent, item.getAttribute("href")])).toEqual([
       ["Open :5173", "http://127.0.0.1:5173"],
@@ -328,13 +376,20 @@ describe("services page", () => {
     expect(items[0]).toHaveAttribute("target", "_blank");
   });
 
-  it("SVC-7: Copy copies the PID, the command line, or a port", async () => {
+  it("SVC-7: a row's ⋯ menu copies the PID, the command line, or a port, and offers Stop…", async () => {
     const { slot } = await mountServices();
     await screen.findByRole("table", { name: "Services" });
     const copyFrom = async (name: string) => {
-      const menu = await openMenu(within(row(51002)).getByRole("button", { name: /^Copy from / }));
+      const menu = await rowMenu(51002);
       fireEvent.click(within(menu).getByRole("menuitem", { name }));
     };
+    const menu = await rowMenu(51002);
+    expect(
+      within(menu)
+        .getAllByRole("menuitem")
+        .map((item) => item.textContent),
+    ).toEqual(["Copy PID", "Copy command line", "Copy port :5173", "Copy port :24678", "Stop…"]);
+    fireEvent.keyDown(menu, { key: "Escape" });
     await copyFrom("Copy PID");
     await copyFrom("Copy command line");
     await copyFrom("Copy port :24678");
@@ -352,7 +407,7 @@ describe("services page", () => {
   it("SVC-8, SVC-19: Stop asks first, saying how many processes it signals, then sends SIGTERM", async () => {
     const { server } = await mountServices();
     await screen.findByRole("table", { name: "Services" });
-    fireEvent.click(within(row(48345)).getByRole("button", { name: /^Stop / }));
+    await stopFromRow(48345);
     const dialog = await screen.findByRole("dialog");
     expect(dialog).toHaveTextContent("Sends SIGTERM to 3 processes");
     expect(
@@ -369,7 +424,9 @@ describe("services page", () => {
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(server.kills).toEqual([]);
 
-    fireEvent.click(within(row(33438)).getByRole("button", { name: /^Stop / }));
+    // From the drawer.
+    fireEvent.click(row(33438));
+    fireEvent.click(within(drawer()).getByRole("button", { name: "Stop" }));
     const again = await screen.findByRole("dialog");
     expect(again).toHaveTextContent("Sends SIGTERM to 1 process: PID 33438");
     fireEvent.click(within(again).getByRole("button", { name: "Stop" }));
@@ -380,7 +437,7 @@ describe("services page", () => {
   it("SVC-19: when the group changed after the confirmation, Stop signals nothing and refreshes", async () => {
     const { server, rpc } = await mountServices();
     await screen.findByRole("table", { name: "Services" });
-    fireEvent.click(within(row(48345)).getByRole("button", { name: /^Stop / }));
+    await stopFromRow(48345);
     const dialog = await screen.findByRole("dialog");
     expect(dialog).toHaveTextContent("Sends SIGTERM to 3 processes");
     server.machine.processes.push({ pid: 48373, pgid: 48263, command: "esbuild --service" });
@@ -395,28 +452,32 @@ describe("services page", () => {
     await screen.findByRole("table", { name: "Services" });
     const before = listCalls(rpc);
     server.machine.processes.find((p) => p.pid === 33438)!.start = "Sun Oct 18 09:00:00 2026";
-    fireEvent.click(within(row(33438)).getByRole("button", { name: /^Stop / }));
+    await stopFromRow(33438);
     await waitFor(() => expect(listCalls(rpc)).toBeGreaterThan(before));
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(server.kills).toEqual([]);
   });
 
-  it("SVC-9: a process still alive 5 seconds after Stop offers Force stop, which sends SIGKILL, even once its port is closed", async () => {
+  it("SVC-9: after Stop the row says Stopping…; still alive 5 seconds later, the row and drawer offer Force stop, which sends SIGKILL, even once its port is closed", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: false });
     const m = servicesMachine();
     m.processes.find((p) => p.pid === 33438)!.ignoresTerm = true;
     const { server } = await mountServices(servicesWorld(), m);
     await advance(0);
-    fireEvent.click(within(row(33438)).getByRole("button", { name: /^Stop / }));
+    fireEvent.click(row(33438));
+    await advance(0);
+    fireEvent.click(within(drawer()).getByRole("button", { name: "Stop" }));
     await advance(0);
     fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Stop" }));
     await advance(0);
     expect(server.kills).toEqual([{ target: -33438, signal: "SIGTERM" }]);
     // Shutting down, it closed its port but still runs.
     server.machine.processes.find((p) => p.pid === 33438)!.ports = [];
-    expect(within(row(33438)).getByRole("button", { name: "Stopping…" })).toBeDisabled();
+    expect(within(row(33438)).getAllByRole("cell")[3]).toHaveTextContent("Stopping…");
     expect(within(row(33438)).queryByRole("button", { name: "Force stop" })).toBeNull();
     await advance(FORCE_STOP_AFTER_MS);
+    expect(within(drawer()).getByRole("button", { name: "Force stop" })).toBeInTheDocument();
+    expect(within(drawer()).queryByRole("button", { name: "Stop" })).toBeNull();
     fireEvent.click(within(row(33438)).getByRole("button", { name: "Force stop" }));
     await advance(0);
     expect(server.kills.at(-1)).toEqual({ target: -33438, signal: "SIGKILL" });

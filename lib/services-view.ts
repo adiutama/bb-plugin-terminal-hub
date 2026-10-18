@@ -41,3 +41,12 @@ export function filterGroups(
     return services.length > 0 ? [{ ...group, services }] : [];
   });
 }
+
+/**
+ * SVC-24: the file name of the command line's first word: `node` for
+ * `/Users/me/.local/share/mise/installs/node/22.23.2/bin/node --require …`.
+ */
+export function programName(command: string): string {
+  const first = command.trim().split(/\s+/)[0] ?? "";
+  return first.split("/").filter(Boolean).pop() ?? first;
+}
