@@ -11,12 +11,21 @@ import { type Machine, STARTED_AT } from "./fixtures/fake-host";
 import { loadApp, mountPage, openMenu, stopFollowing } from "./fixtures/page";
 import {
   disposeServers,
+  labelledMachine,
+  recordJson,
   servicesMachine,
   servicesWorld,
   startServer,
+  WORKTREE,
 } from "./fixtures/services-world";
 
-const METHODS = ["services.list", "services.plan", "services.stop", "services.log"] as const;
+const METHODS = [
+  "services.list",
+  "services.plan",
+  "services.stop",
+  "services.log",
+  "services.connect",
+] as const;
 
 let visibility: DocumentVisibilityState = "visible";
 
@@ -550,5 +559,227 @@ describe("services page", () => {
     await mountServices(servicesWorld(), servicesMachine(), { open: false });
     expect(servicesButton()).toHaveAttribute("aria-pressed", "false");
     expect(screen.queryByRole("region", { name: "Services" })).toBeNull();
+  });
+});
+
+describe("services page: agent service records", () => {
+  const connect = () => screen.getByRole("region", { name: "Connect" });
+  const envRows = (environmentId: string) =>
+    Array.from(
+      table().querySelectorAll<HTMLElement>(`tbody[data-environment-id="${environmentId}"] tr`),
+    )
+      .slice(1)
+      .map((tr) =>
+        tr.dataset.serviceSet !== undefined
+          ? `set ${tr.textContent}`
+          : tr.dataset.setEnd !== undefined
+            ? "end"
+            : Number(tr.dataset.servicePid),
+      );
+
+  it("SVC-25: a set's rows sit together under a set row with the record's title, its case on hover; unlabelled rows follow", async () => {
+    const m = labelledMachine();
+    m.processes.push({
+      pid: 60001,
+      command: "node other.js",
+      cwd: WORKTREE,
+      env: {},
+      ports: [3000],
+    });
+    await mountServices(servicesWorld(), m);
+    await screen.findByRole("table", { name: "Services" });
+    expect(envRows("env_wt")).toEqual([
+      "set kai-platform — multi-org access case",
+      33438,
+      48345,
+      "end",
+      60001,
+    ]);
+    // Environments without sets look as they did.
+    expect(envRows("env_b")).toEqual([51002]);
+    fireEvent.focus(screen.getByRole("button", { name: "kai-platform — multi-org access case" }));
+    expect(await screen.findByRole("tooltip")).toHaveTextContent(
+      "adi@strata.co.jp is platform admin, writer at Demo AM Co, read-only at Contoso",
+    );
+  });
+
+  it("SVC-25: when the record cannot be read, the set row shows the name of the folder holding it", async () => {
+    await mountServices(servicesWorld(), labelledMachine(null));
+    await screen.findByRole("table", { name: "Services" });
+    expect(envRows("env_wt")).toEqual(["set 20261017-201623-d32d", 33438, 48345]);
+  });
+
+  it("SVC-26: a labelled row shows its name in the Program column with the program after it, muted; hovering still shows the command line", async () => {
+    await mountServices(servicesWorld(), labelledMachine());
+    await screen.findByRole("table", { name: "Services" });
+    const program = within(row(48345)).getAllByRole("cell")[1]!;
+    expect(program).toHaveTextContent(/^api node$/);
+    expect(program.querySelector("[data-service-name]")).toHaveTextContent(/^api$/);
+    expect(within(program).getByText("node")).toHaveClass("text-[var(--subtle-foreground)]");
+    fireEvent.focus(within(program).getByRole("button"));
+    expect(await screen.findByRole("tooltip")).toHaveTextContent(
+      "/usr/local/bin/node apps/api/src/main.ts",
+    );
+    // Unlabelled rows are as before.
+    expect(within(row(51002)).getAllByRole("cell")[1]).toHaveTextContent(/^node$/);
+    fireEvent.click(row(48345));
+    expect(drawer().querySelector("[data-drawer-header]")).toHaveTextContent(":55401api node");
+  });
+
+  it("SVC-15: find also matches a service's name and its set's title and case", async () => {
+    const m = labelledMachine();
+    const api = m.processes.find((p) => p.pid === 48345)!;
+    api.env = { ...api.env, AGENT_SERVICE_NAME: "backend" };
+    await mountServices(servicesWorld(), m);
+    await screen.findByRole("table", { name: "Services" });
+    const find = screen.getByRole("textbox", { name: "Find service" });
+    const shownPids = () =>
+      Array.from(table().querySelectorAll<HTMLElement>("[data-service-pid]")).map((r) =>
+        Number(r.dataset.servicePid),
+      );
+    fireEvent.change(find, { target: { value: "BACKEND" } });
+    expect(shownPids()).toEqual([48345]);
+    fireEvent.change(find, { target: { value: "multi-org" } });
+    expect(shownPids()).toEqual([33438, 48345]);
+    fireEvent.change(find, { target: { value: "contoso backend" } });
+    expect(shownPids()).toEqual([48345]);
+    // The set row stays above what is left of it.
+    expect(envRows("env_wt")).toEqual(["set kai-platform — multi-org access case", 48345]);
+  });
+
+  it("SVC-28: selecting a labelled row shows Connect: its entry's URLs with their labels and the set's credentials with label and username; copy gives full values", async () => {
+    const { slot } = await mountServices(servicesWorld(), labelledMachine());
+    await screen.findByRole("table", { name: "Services" });
+    fireEvent.click(row(33438));
+    await waitFor(() => expect(connect()).toBeInTheDocument());
+    const urls = Array.from(connect().querySelectorAll("[data-connect-url]"));
+    expect(urls.map((entry) => entry.textContent)).toEqual([
+      expect.stringContaining("Superuserpostgres://postgres@127.0.0.1:55400/kai_platform"),
+      expect.stringContaining("App rolepostgres://kai_app:••••@127.0.0.1:55400/kai_platform"),
+    ]);
+    const login = connect().querySelector("[data-connect-credential]")!;
+    expect(login).toHaveTextContent("Case login");
+    expect(login).toHaveTextContent("adi@strata.co.jp");
+    fireEvent.click(within(connect()).getByRole("button", { name: "Copy App role URL" }));
+    fireEvent.click(within(connect()).getByRole("button", { name: "Copy Case login username" }));
+    fireEvent.click(within(connect()).getByRole("button", { name: "Copy Case login secret" }));
+    await waitFor(() =>
+      expect(slot.inspection.experimental_clipboardWrites).toEqual([
+        { text: "postgres://kai_app:kai_app_dev@127.0.0.1:55400/kai_platform" },
+        { text: "adi@strata.co.jp" },
+        { text: "abcd1234" },
+      ]),
+    );
+    // Another row: its own entry, the same set's credentials.
+    fireEvent.click(row(48345));
+    await waitFor(() => expect(connect().querySelectorAll("[data-connect-url]")).toHaveLength(1));
+    expect(connect()).toHaveTextContent("Apphttp://127.0.0.1:55401");
+    expect(connect()).toHaveTextContent("Case login");
+  });
+
+  it("SVC-28: no Connect section for an unlabelled row, an unreadable record, or a name with no entry", async () => {
+    const m = labelledMachine(
+      JSON.stringify(recordJson({ services: [{ name: "api", urls: [] }] })),
+    );
+    const { rpc } = await mountServices(servicesWorld(), m);
+    await screen.findByRole("table", { name: "Services" });
+    fireEvent.click(row(51002));
+    await within(drawer()).findByText(/has no log file/);
+    expect(rpc["services.connect"]).not.toHaveBeenCalled();
+    // postgres has no entry.
+    fireEvent.click(row(33438));
+    await waitFor(() => expect(rpc["services.connect"]).toHaveBeenCalledTimes(1));
+    await act(async () => {});
+    expect(screen.queryByRole("region", { name: "Connect" })).toBeNull();
+    // api has an entry, and the set's credentials.
+    fireEvent.click(row(48345));
+    await waitFor(() => expect(connect()).toHaveTextContent("Case login"));
+  });
+
+  it("SVC-29: secrets and URL passwords show as •••• until Show, in the drawer only; copying gives the full value", async () => {
+    const { slot, page } = await mountServices(servicesWorld(), labelledMachine());
+    await screen.findByRole("table", { name: "Services" });
+    expect(document.body).not.toHaveTextContent("abcd1234");
+    fireEvent.click(row(33438));
+    await waitFor(() => expect(connect()).toBeInTheDocument());
+    expect(page.slot.container).not.toHaveTextContent("kai_app_dev");
+    expect(page.slot.container).not.toHaveTextContent("abcd1234");
+    const secret = connect().querySelector("[data-secret]")!;
+    expect(secret).toHaveTextContent(/^••••$/);
+    fireEvent.click(within(connect()).getByRole("button", { name: "Show Case login" }));
+    expect(secret).toHaveTextContent(/^abcd1234$/);
+    expect(connect()).not.toHaveTextContent("kai_app_dev");
+    fireEvent.click(within(connect()).getByRole("button", { name: "Show App role" }));
+    expect(connect()).toHaveTextContent(
+      "postgres://kai_app:kai_app_dev@127.0.0.1:55400/kai_platform",
+    );
+    fireEvent.click(within(connect()).getByRole("button", { name: "Hide Case login" }));
+    expect(secret).toHaveTextContent(/^••••$/);
+    fireEvent.click(within(connect()).getByRole("button", { name: "Copy Case login secret" }));
+    await waitFor(() =>
+      expect(slot.inspection.experimental_clipboardWrites).toEqual([{ text: "abcd1234" }]),
+    );
+    // Another row starts masked again.
+    fireEvent.click(row(48345));
+    await waitFor(() => expect(connect().querySelector("[data-secret]")).toHaveTextContent("••••"));
+  });
+
+  it("SVC-29: only http(s) URLs on 127.0.0.1, localhost or ::1 are links, opening in a new tab; others are copy-only", async () => {
+    const urls = [
+      { label: "App", url: "http://127.0.0.1:55401" },
+      { label: "Secure", url: "https://localhost:8443/admin" },
+      { label: "Six", url: "http://[::1]:8080/" },
+      { label: "Basic", url: "http://admin:pw@localhost:9000/" },
+      { label: "Remote", url: "http://example.com/" },
+      { label: "Lookalike", url: "http://127.0.0.1.example.com/" },
+      { label: "FTP", url: "ftp://127.0.0.1/" },
+      { label: "Script", url: "javascript:alert(1)" },
+      { label: "Database", url: "postgres://127.0.0.1:55400/kai" },
+    ];
+    const record = recordJson({ services: [{ name: "api", urls }] });
+    await mountServices(servicesWorld(), labelledMachine(JSON.stringify(record)));
+    await screen.findByRole("table", { name: "Services" });
+    fireEvent.click(row(48345));
+    await waitFor(() => expect(connect()).toBeInTheDocument());
+    const links = within(connect()).getAllByRole("link");
+    expect(links.map((link) => link.getAttribute("href"))).toEqual([
+      "http://127.0.0.1:55401/",
+      "https://localhost:8443/admin",
+      "http://[::1]:8080/",
+      // Masked, the link carries no password either.
+      "http://admin@localhost:9000/",
+    ]);
+    for (const link of links) {
+      expect(link).toHaveAttribute("target", "_blank");
+      expect(link).toHaveAttribute("rel", "noopener noreferrer");
+    }
+    fireEvent.click(within(connect()).getByRole("button", { name: "Show Basic" }));
+    expect(
+      within(connect()).getByRole("link", { name: "http://admin:pw@localhost:9000/" }),
+    ).toHaveAttribute("href", "http://admin:pw@localhost:9000/");
+    // Copy-only: shown, with a copy action, not a link.
+    for (const label of ["Remote", "Lookalike", "FTP", "Script", "Database"]) {
+      expect(within(connect()).getByRole("button", { name: `Copy ${label} URL` })).toBeVisible();
+    }
+    expect(connect()).toHaveTextContent("javascript:alert(1)");
+  });
+
+  it("SVC-29: record strings are shown as plain text", async () => {
+    const markup = '<img src=x onerror="window.hacked=1">';
+    const record = recordJson({
+      title: `<b>bold</b> ${markup}`,
+      case: markup,
+      credentials: [{ label: `<i>${markup}</i>`, username: markup, secret: markup }],
+      services: [{ name: "api", urls: [{ label: markup, url: `http://127.0.0.1:1/${markup}` }] }],
+    });
+    await mountServices(servicesWorld(), labelledMachine(JSON.stringify(record)));
+    await screen.findByRole("table", { name: "Services" });
+    expect(table()).toHaveTextContent(`<b>bold</b> ${markup}`);
+    fireEvent.click(row(48345));
+    await waitFor(() => expect(connect()).toBeInTheDocument());
+    expect(connect()).toHaveTextContent(`<i>${markup}</i>`);
+    for (const shown of [table(), connect()]) expect(shown.querySelector("img, b, i")).toBeNull();
+    expect(document.querySelector("img")).toBeNull();
+    expect((window as { hacked?: number }).hacked).toBeUndefined();
   });
 });
