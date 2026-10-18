@@ -89,13 +89,21 @@ stopped.
   each process's port (a link that opens `http://127.0.0.1:<port>`), its
   program (`node`, `postgres`; point at it for the full command line), the
   thread that started it (a link to the thread), and how long it has been up.
-  **Find** narrows the rows by port, command line, PID, or name.
+  **Find** narrows the rows by port, command line, PID, service or set name,
+  or environment.
+- Servers labelled with an *agent service record* (see below) are named by
+  their role (`api  node`, `postgres  postgres`) and shown together under
+  their set's title; point at the title for the case it was seeded with.
 - Each row's **⋯** menu copies its PID, command line, or a port, and offers
   **Stop…**.
 - Click a row to open a drawer below the table with its port, program, PID,
   uptime and log file (copy the path from there), **Open** and **Stop**
   buttons, and the log itself (the last 64 KB of the file its output goes
-  to), kept at the end as it grows. **×** closes it.
+  to), kept at the end as it grows. **×** closes it. For a labelled server,
+  a **Connect** section lists its URLs and its set's logins: passwords and
+  secrets show as `••••` until you press **Show**, copying gives the full
+  value, and only `http(s)` URLs on `127.0.0.1`, `localhost` or `::1` are
+  links.
 - Stop asks first and says how many processes it signals: a launch such as
   `npm run dev` started in its own process group is stopped as a whole, so a
   watcher cannot restart the server, when every process in it can be told
@@ -111,11 +119,25 @@ stopped.
   as not checked. It needs `lsof` (macOS and Linux); without it the view says
   so.
 
+#### Agent service records
+
+Any tool that starts detached servers can label them so they read as a set:
+each process carries `AGENT_SERVICE_RECORD` (the absolute path of the set's
+`services.json`) and `AGENT_SERVICE_NAME` (its entry's `name`), and
+`services.json` (version 1) holds the set's title, case and logins and, per
+service, its ports, URLs and log. The record is only read when it is a
+regular file you own, not a symlink, at most 64 KiB, with `version` 1;
+otherwise the labels still name and group the rows. It is only ever shown:
+what is listed, which log is shown, and what Stop signals never depend on it.
+Processes macOS hides the environment of (Apple-signed programs such as
+`/usr/bin/python3`) and Docker containers stay unlabelled.
+
 ### For agents
 
 The plugin ships a skill that tells agents to start dev servers and watchers
 as environment terminals (`bb terminal create --environment … --title …`),
-to check what is already running first, and to leave them running when done.
+to check what is already running first, to label detached servers with an
+agent service record, and to leave them running when done.
 Agents and you can list an environment's terminals, and the servers running
 outside them, from the command line; the skill tells agents to check both
 before starting a server:
@@ -124,8 +146,8 @@ before starting a server:
 bb terminal-hub list                      # the calling thread's environment
 bb terminal-hub list --environment env_…  # any environment
 bb terminal-hub list --json               # id, title, status, scope, thread, serverHint
-bb terminal-hub services                  # what the Services view lists for it
-bb terminal-hub services --json           # pid, ports, command, startedAt, threadId, logPath
+bb terminal-hub services                  # what the Services view lists for it, with service names and sets
+bb terminal-hub services --json           # pid, ports, command, startedAt, threadId, logPath, name, set
 ```
 
 ## Contributing
