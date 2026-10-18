@@ -91,7 +91,7 @@ export async function createPlugin(bb: BbPluginApi, host: ProcessHost) {
         services: cliCommand({
           summary: "List the servers running in an environment outside bb terminals",
           description:
-            "Shows the processes the Services page lists for the environment: each listening process with its ports, PID, command line, starting thread, and log file. Run it with `list` before starting a server, and reuse a listed one instead of starting another.",
+            "Shows the processes the Services page lists for the environment: each listening process with its ports, PID, command line, service name and set (from an agent service record), starting thread, and log file. Run it with `list` before starting a server, and reuse a listed one instead of starting another.",
           options: {
             environment: environmentOption,
             json: { type: "boolean", description: "Print machine-readable JSON" },
