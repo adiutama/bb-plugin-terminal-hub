@@ -126,7 +126,8 @@ useRpc().call ──► server.ts (bb.rpc) ──► lib/services.ts ──► l
 | `lib/services-view.ts` | The find field's filter and the running count (SVC-15). |
 | `lib/services-cli.ts` | `bb terminal-hub services`: text and JSON for one environment. |
 | `lib/services-store.ts` | The main view (terminals or Services) and the latest list, shared by the title-bar button and the page. |
-| `components/services-page.tsx` | The title-bar button, the scan cadence, and the Services view: table, actions, stop confirmation, and log drawer. |
+| `components/services-page.tsx` | The title-bar button, the scan cadence, and the Services view: the port-led table with its `⋯` menu, the stop confirmation, and the drawer with Open, Stop and the log (ADR 202610180433). |
+| `components/ui/tooltip.tsx` | The program's full command line on hover (SVC-24). |
 
 ## Terminal engine
 
