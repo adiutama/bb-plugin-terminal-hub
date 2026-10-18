@@ -1,6 +1,6 @@
 # Label services from an agent service record
 
-- Status: proposed
+- Status: accepted
 - Date: 2026-10-18
 - Supersedes: none
 - Superseded by: none
